@@ -1,0 +1,53 @@
+BasedOnStyle: LLVM
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+IndentPPDirectives: AfterHash
+
+AlignConsecutiveAssignments:
+    Enabled: true
+    AcrossEmptyLines: false
+    AcrossComments: false
+AlignConsecutiveBitFields:
+    Enabled: true
+    AcrossEmptyLines: true
+    AcrossComments: true
+AlignConsecutiveDeclarations:
+    Enabled: false
+    AcrossEmptyLines: false
+    AcrossComments: false
+AlignConsecutiveMacros:
+    Enabled: true
+    AcrossEmptyLines: true
+    AcrossComments: false
+AlignConsecutiveShortCaseStatements:
+    Enabled: true
+    AcrossEmptyLines: false
+    AcrossComments: false
+    AlignCaseColons: false
+
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+
+BinPackArguments: true
+BinPackParameters: false
+PackConstructorInitializers: CurrentLine
+BreakAdjacentStringLiterals: true
+BreakAfterAttributes: Leave
+BreakAfterReturnType: None
+BreakTemplateDeclarations: Yes
+BreakBeforeConceptDeclarations: Always
+BreakBeforeInlineASMColon: OnlyMultiline
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeColon
+BreakFunctionDefinitionParameters: false
+BreakInheritanceList: AfterComma
+BreakStringLiterals: true
+IndentRequiresClause: true
+RequiresExpressionIndentation: OuterScope
+RequiresClausePosition: OwnLineWithBrace
