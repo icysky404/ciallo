@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using namespace ciallo::detail;
 
 TEST(swiss_table, control_group) {
