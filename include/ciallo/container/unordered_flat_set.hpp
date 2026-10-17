@@ -1073,7 +1073,8 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::unordered_flat_set(ForwardIt
         for (;;) {
             detail::swiss_table_control_group group(states + probe.offset());
             for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
-                auto &value = values[std::countr_zero(mask)];
+                auto index  = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
+                auto &value = values[index];
                 if (m_size.second()(value, *first)) {
                     goto probe_done;
                 }
@@ -1287,6 +1288,8 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::operator=(const unordered_fl
         m_capacity.first() = bucket_count;
         m_states.first()   = reinterpret_cast<std::int8_t *>(memory);
         m_values.first()   = reinterpret_cast<value_type *>(memory + value_offset);
+    } else {
+        bucket_count = m_capacity.first();
     }
 
     states = m_states.first();
@@ -1394,6 +1397,8 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::operator=(
         m_capacity.first() = bucket_count;
         m_states.first()   = reinterpret_cast<std::int8_t *>(memory);
         m_values.first()   = reinterpret_cast<value_type *>(memory + value_offset);
+    } else {
+        bucket_count = m_capacity.first();
     }
 
     states = m_states.first();
@@ -1411,7 +1416,8 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::operator=(
         for (;;) {
             detail::swiss_table_control_group group(states + probe.offset());
             for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
-                auto &value = values[std::countr_zero(mask)];
+                auto index  = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
+                auto &value = values[index];
                 if (m_size.second()(value, element)) {
                     goto probe_done;
                 }
