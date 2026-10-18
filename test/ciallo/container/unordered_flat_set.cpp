@@ -799,6 +799,14 @@ TEST(unordered_flat_set, ctor_huge_bucket_count_throws_length_error) {
             (void)set;
         },
         std::length_error);
+
+    std::vector<int> values{1};
+    EXPECT_THROW(
+        {
+            set_t set(values.begin(), values.end(), too_big);
+            (void)set;
+        },
+        std::length_error);
 }
 
 TEST(unordered_flat_set, range_ctor_deduplicates) {
@@ -1224,6 +1232,14 @@ TEST(unordered_flat_set, initializer_list_assign_replaces_content) {
         EXPECT_TRUE(set.empty());
         EXPECT_EQ(capacity_from_bytes<int>(alloc_stats::last_size), capacity_before);
         EXPECT_EQ(capacity_before, 15u);
+
+        set = {10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
+
+        EXPECT_EQ(set.size(), 15u);
+        EXPECT_EQ(capacity_from_bytes<int>(alloc_stats::last_size), 31u);
+        for (int i = 0; i < 15; ++i) {
+            EXPECT_TRUE(set.contains(10 + i));
+        }
     }
     EXPECT_EQ(alloc_stats::allocs, alloc_stats::deallocs);
 }
@@ -1726,6 +1742,11 @@ TEST(unordered_flat_set, insert_transparent_key_constructs_in_place) {
     EXPECT_NE(set.find(std::string_view("hello")), set.end());
     EXPECT_EQ(tracked_text::constructions, 0);
 
+    tracked_text::constructions = 0;
+    const auto duplicate        = set.insert(std::string_view("hello"));
+    EXPECT_FALSE(duplicate.second);
+    EXPECT_EQ(tracked_text::constructions, 0);
+
     const auto inserted = set.insert(std::string_view("world"));
     EXPECT_TRUE(inserted.second);
     EXPECT_EQ(tracked_text::constructions, 1);
@@ -1848,6 +1869,22 @@ TEST(unordered_flat_set, insert_that_triggers_growth_returns_valid_iterator) {
         EXPECT_EQ(capacity_from_bytes<int>(alloc_stats::last_size), 31u);
         EXPECT_EQ(set.size(), 15u);
     }
+    {
+        set_t set;
+        for (int i = 0; i < 14; ++i) {
+            set.insert(i);
+        }
+        EXPECT_EQ(capacity_from_bytes<int>(alloc_stats::last_size), 15u);
+
+        const int value   = 14;
+        const auto result = set.insert(value);
+
+        EXPECT_TRUE(result.second);
+        EXPECT_EQ(*result.first, 14);
+        EXPECT_EQ(result.first, set.find(14));
+        EXPECT_EQ(capacity_from_bytes<int>(alloc_stats::last_size), 31u);
+        EXPECT_EQ(set.size(), 15u);
+    }
     EXPECT_EQ(alloc_stats::allocs, alloc_stats::deallocs);
 }
 
@@ -1889,19 +1926,23 @@ TEST(unordered_flat_set, insert_into_completely_full_probe_window) {
     pinned_hash hash;
     hash.table.push_back({100, {0, 100}});
     hash.table.push_back({101, {0, 99}});
+    hash.table.push_back({102, {0, 98}});
     for (int i = 0; i < 16; ++i) {
         hash.table.push_back({i, {static_cast<std::size_t>(i), static_cast<std::size_t>(i + 1)}});
     }
 
-    set_t set;
+    set_t set(0, hash);
     set.reserve(28);
     for (int i = 0; i < 16; ++i) {
         EXPECT_TRUE(set.insert(i).second);
     }
     ASSERT_EQ(set.size(), 16u);
 
-    EXPECT_TRUE(set.insert(100).second);
+    const int value = 100;
+    EXPECT_TRUE(set.insert(value).second);
+    EXPECT_TRUE(set.insert(102).second);
     EXPECT_TRUE(set.contains(100));
+    EXPECT_TRUE(set.contains(102));
     for (int i = 0; i < 16; ++i) {
         EXPECT_TRUE(set.contains(i));
     }
@@ -2019,14 +2060,17 @@ TEST(unordered_flat_set, insert_duplicate_does_not_grow) {
 
 TEST(unordered_flat_set, find_count_contains_agree) {
     set_t set;
+    const set_t &const_set = set;
 
     EXPECT_EQ(set.find(1), set.end());
+    EXPECT_EQ(const_set.find(1), const_set.end());
     EXPECT_EQ(set.count(1), 0u);
     EXPECT_FALSE(set.contains(1));
 
     set.insert(1);
 
     EXPECT_NE(set.find(1), set.end());
+    EXPECT_EQ(*const_set.find(1), 1);
     EXPECT_EQ(set.count(1), 1u);
     EXPECT_TRUE(set.contains(1));
 
@@ -2063,6 +2107,15 @@ TEST(unordered_flat_set, heterogeneous_lookup_with_transparent_hash) {
 
     tracked_text::constructions = 0;
     set_t set;
+    set_t empty_set;
+    const set_t &const_empty_set = empty_set;
+
+    EXPECT_EQ(empty_set.find(std::string_view("alpha")), empty_set.end());
+    EXPECT_EQ(empty_set.count(std::string_view("alpha")), 0u);
+    EXPECT_FALSE(empty_set.contains(std::string_view("alpha")));
+    EXPECT_EQ(const_empty_set.find(std::string_view("alpha")), const_empty_set.end());
+    EXPECT_EQ(const_empty_set.count(std::string_view("alpha")), 0u);
+
     set.insert("alpha");
     set.insert("beta");
 
@@ -2074,10 +2127,17 @@ TEST(unordered_flat_set, heterogeneous_lookup_with_transparent_hash) {
     EXPECT_EQ(set.erase(std::string_view("alpha")), 1u);
     EXPECT_FALSE(set.contains(std::string_view("alpha")));
     EXPECT_EQ(set.size(), 1u);
+
+    EXPECT_EQ(set.find(std::string_view("gamma")), set.end());
+    EXPECT_EQ(set.count(std::string_view("gamma")), 0u);
+    EXPECT_FALSE(set.contains(std::string_view("gamma")));
+    EXPECT_EQ(set.erase(std::string_view("gamma")), 0u);
     EXPECT_EQ(tracked_text::constructions, 0);
 
     const set_t &const_set = set;
     EXPECT_NE(const_set.find(std::string_view("beta")), const_set.end());
+    EXPECT_EQ(const_set.find(std::string_view("gamma")), const_set.end());
+    EXPECT_EQ(const_set.count(std::string_view("gamma")), 0u);
 }
 
 TEST(unordered_flat_set, heterogeneous_lookup_requires_transparent_hasher) {
@@ -2124,7 +2184,7 @@ TEST(unordered_flat_set, lookup_absent_key_through_full_window) {
         hash.table.push_back({i, {static_cast<std::size_t>(i), static_cast<std::size_t>(i + 1)}});
     }
 
-    set_t set;
+    set_t set(0, hash);
     set.reserve(28);
     for (int i = 0; i < 16; ++i) {
         set.insert(i);
@@ -2133,6 +2193,10 @@ TEST(unordered_flat_set, lookup_absent_key_through_full_window) {
     EXPECT_EQ(set.find(200), set.end());
     EXPECT_EQ(set.count(200), 0u);
     EXPECT_FALSE(set.contains(200));
+
+    const set_t &const_set = set;
+    EXPECT_EQ(const_set.find(200), const_set.end());
+    EXPECT_EQ(const_set.count(200), 0u);
 }
 
 TEST(unordered_flat_set, lookup_after_growth_and_rehash) {
@@ -3377,7 +3441,7 @@ TEST(unordered_flat_set, adversarial_pinned_hash_layouts) {
     }
 
     {
-        set_t set;
+        set_t set(0, hash);
         set.reserve(28);
 
         for (int key = 1; key <= 8; ++key) {
@@ -3407,7 +3471,7 @@ TEST(unordered_flat_set, adversarial_pinned_hash_layouts) {
     }
 
     {
-        set_t set;
+        set_t set(0, hash);
         set.reserve(28);
         for (int i = 0; i < 10; ++i) {
             EXPECT_TRUE(set.insert(40 + i).second);
@@ -3419,6 +3483,27 @@ TEST(unordered_flat_set, adversarial_pinned_hash_layouts) {
             EXPECT_EQ(set.erase(40 + i), 1u);
         }
         EXPECT_TRUE(set.empty());
+    }
+
+    for (int i = 0; i < 16; ++i) {
+        hash.table.push_back({200 + i, {0, static_cast<std::size_t>(i)}});
+    }
+    hash.table.push_back({216, {0, 100}});
+
+    {
+        std::vector<int> values;
+        values.reserve(17);
+        for (int i = 0; i < 16; ++i) {
+            values.push_back(200 + i);
+        }
+        values.push_back(216);
+
+        set_t set(values.begin(), values.end(), 0, hash);
+        EXPECT_EQ(set.size(), 17u);
+        for (int i = 0; i < 16; ++i) {
+            EXPECT_TRUE(set.contains(200 + i));
+        }
+        EXPECT_TRUE(set.contains(216));
     }
 }
 

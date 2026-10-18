@@ -846,6 +846,14 @@ TEST(unordered_flat_map, ctor_huge_bucket_count_throws_length_error) {
             (void)map;
         },
         std::length_error);
+
+    std::vector<std::pair<int, int>> values{{1, 10}};
+    EXPECT_THROW(
+        {
+            map_t map(values.begin(), values.end(), too_big);
+            (void)map;
+        },
+        std::length_error);
 }
 
 TEST(unordered_flat_map, range_ctor_deduplicates) {
@@ -1294,6 +1302,16 @@ TEST(unordered_flat_map, initializer_list_assign_replaces_content) {
         EXPECT_TRUE(map.empty());
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), capacity_before);
         EXPECT_EQ(capacity_before, 15u);
+
+        map = {{10, 100}, {11, 110}, {12, 120}, {13, 130}, {14, 140},
+               {15, 150}, {16, 160}, {17, 170}, {18, 180}, {19, 190},
+               {20, 200}, {21, 210}, {22, 220}, {23, 230}, {24, 240}};
+
+        EXPECT_EQ(map.size(), 15u);
+        EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 31u);
+        for (int i = 0; i < 15; ++i) {
+            EXPECT_EQ(map.at(10 + i), (10 + i) * 10);
+        }
     }
     EXPECT_EQ(alloc_stats::allocs, alloc_stats::deallocs);
 }
@@ -1472,7 +1490,8 @@ TEST(unordered_flat_map, growth_points_are_at_seven_eighths) {
         }
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 15u);
 
-        map.insert({14, 14});
+        const int key14 = 14;
+        map.insert_or_assign(key14, 14);
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 31u);
 
         for (int i = 15; i < 28; ++i) {
@@ -1480,7 +1499,7 @@ TEST(unordered_flat_map, growth_points_are_at_seven_eighths) {
         }
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 31u);
 
-        map.insert({28, 28});
+        map.insert_or_assign(28, 28);
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 63u);
 
         for (int i = 29; i < 56; ++i) {
@@ -1488,7 +1507,7 @@ TEST(unordered_flat_map, growth_points_are_at_seven_eighths) {
         }
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 63u);
 
-        map.insert({56, 56});
+        map.try_emplace(56, 56);
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 127u);
     }
     EXPECT_EQ(alloc_stats::allocs, alloc_stats::deallocs);
@@ -1816,6 +1835,12 @@ TEST(unordered_flat_map, insert_transparent_key_constructs_in_place) {
     EXPECT_NE(map.find(std::string_view("hello")), map.end());
     EXPECT_EQ(tracked_text::constructions, 0);
 
+    tracked_text::constructions = 0;
+    const auto duplicate        = map.insert(std::pair<std::string_view, int>{"hello", 2});
+    EXPECT_FALSE(duplicate.second);
+    EXPECT_EQ(duplicate.first->second, 1);
+    EXPECT_EQ(tracked_text::constructions, 0);
+
     const auto inserted = map.insert(std::pair<std::string_view, int>{"world", 2});
     EXPECT_TRUE(inserted.second);
     EXPECT_EQ(tracked_text::constructions, 1);
@@ -1922,6 +1947,23 @@ TEST(unordered_flat_map, insert_that_triggers_growth_returns_valid_iterator) {
         EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 31u);
         EXPECT_EQ(map.size(), 15u);
     }
+    {
+        map_t map;
+        for (int i = 0; i < 14; ++i) {
+            map.insert({i, i});
+        }
+        EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 15u);
+
+        const map_t::value_type value{14, 14};
+        const auto result = map.insert(value);
+
+        EXPECT_TRUE(result.second);
+        EXPECT_EQ(result.first->first, 14);
+        EXPECT_EQ(result.first->second, 14);
+        EXPECT_EQ(result.first, map.find(14));
+        EXPECT_EQ(capacity_from_bytes<map_value>(alloc_stats::last_size), 31u);
+        EXPECT_EQ(map.size(), 15u);
+    }
     EXPECT_EQ(alloc_stats::allocs, alloc_stats::deallocs);
 }
 
@@ -1966,6 +2008,7 @@ TEST(unordered_flat_map, insert_into_completely_full_probe_window) {
     pinned_hash hash;
     hash.table.push_back({100, {0, 100}});
     hash.table.push_back({101, {0, 99}});
+    hash.table.push_back({102, {0, 98}});
     for (int i = 0; i < 16; ++i) {
         hash.table.push_back({i, {static_cast<std::size_t>(i), static_cast<std::size_t>(i + 1)}});
     }
@@ -1977,8 +2020,11 @@ TEST(unordered_flat_map, insert_into_completely_full_probe_window) {
     }
     ASSERT_EQ(map.size(), 16u);
 
-    EXPECT_TRUE(map.insert({100, 100}).second);
+    const map_t::value_type value{100, 100};
+    EXPECT_TRUE(map.insert(value).second);
+    EXPECT_TRUE(map.insert({102, 102}).second);
     EXPECT_TRUE(map.contains(100));
+    EXPECT_TRUE(map.contains(102));
     for (int i = 0; i < 16; ++i) {
         EXPECT_TRUE(map.contains(i));
     }
@@ -2254,14 +2300,17 @@ TEST(unordered_flat_map, try_emplace_rvalue_key_moves_not_copies) {
 
 TEST(unordered_flat_map, find_count_contains_agree) {
     map_t map;
+    const map_t &const_map = map;
 
     EXPECT_EQ(map.find(1), map.end());
+    EXPECT_EQ(const_map.find(1), const_map.end());
     EXPECT_EQ(map.count(1), 0u);
     EXPECT_FALSE(map.contains(1));
 
     map.insert({1, 10});
 
     EXPECT_NE(map.find(1), map.end());
+    EXPECT_EQ(const_map.find(1)->second, 10);
     EXPECT_EQ(map.find(1)->second, 10);
     EXPECT_EQ(map.count(1), 1u);
     EXPECT_TRUE(map.contains(1));
@@ -2302,6 +2351,15 @@ TEST(unordered_flat_map, heterogeneous_lookup_with_transparent_hash) {
 
     tracked_text::constructions = 0;
     map_t map;
+    map_t empty_map;
+    const map_t &const_empty_map = empty_map;
+
+    EXPECT_EQ(empty_map.find(std::string_view("alpha")), empty_map.end());
+    EXPECT_EQ(empty_map.count(std::string_view("alpha")), 0u);
+    EXPECT_FALSE(empty_map.contains(std::string_view("alpha")));
+    EXPECT_EQ(const_empty_map.find(std::string_view("alpha")), const_empty_map.end());
+    EXPECT_EQ(const_empty_map.count(std::string_view("alpha")), 0u);
+
     map.insert({"alpha", 1});
     map.insert({"beta", 2});
 
@@ -2317,11 +2375,20 @@ TEST(unordered_flat_map, heterogeneous_lookup_with_transparent_hash) {
     EXPECT_EQ(map.erase(std::string_view("alpha")), 1u);
     EXPECT_FALSE(map.contains(std::string_view("alpha")));
     EXPECT_EQ(map.size(), 1u);
+
+    EXPECT_EQ(map.find(std::string_view("gamma")), map.end());
+    EXPECT_EQ(map.count(std::string_view("gamma")), 0u);
+    EXPECT_FALSE(map.contains(std::string_view("gamma")));
+    EXPECT_THROW((void)map.at(std::string_view("gamma")), std::out_of_range);
+    EXPECT_EQ(map.erase(std::string_view("gamma")), 0u);
     EXPECT_EQ(tracked_text::constructions, 0);
 
     const map_t &const_map = map;
     EXPECT_NE(const_map.find(std::string_view("beta")), const_map.end());
     EXPECT_EQ(const_map.at(std::string_view("beta")), 2);
+    EXPECT_EQ(const_map.find(std::string_view("gamma")), const_map.end());
+    EXPECT_EQ(const_map.count(std::string_view("gamma")), 0u);
+    EXPECT_THROW((void)const_map.at(std::string_view("gamma")), std::out_of_range);
 }
 
 TEST(unordered_flat_map, heterogeneous_lookup_requires_transparent_hasher) {
@@ -2495,6 +2562,10 @@ TEST(unordered_flat_map, lookup_absent_key_through_full_window) {
     EXPECT_EQ(map.find(200), map.end());
     EXPECT_EQ(map.count(200), 0u);
     EXPECT_FALSE(map.contains(200));
+
+    const map_t &const_map = map;
+    EXPECT_EQ(const_map.find(200), const_map.end());
+    EXPECT_EQ(const_map.count(200), 0u);
 }
 
 TEST(unordered_flat_map, lookup_after_growth_and_rehash) {
@@ -3826,6 +3897,28 @@ TEST(unordered_flat_map, adversarial_pinned_hash_layouts) {
             EXPECT_EQ(map.erase(40 + i), 1u);
         }
         EXPECT_TRUE(map.empty());
+    }
+
+    for (int i = 0; i < 16; ++i) {
+        hash.table.push_back({200 + i, {0, static_cast<std::size_t>(i)}});
+    }
+    hash.table.push_back({216, {0, 100}});
+
+    {
+        std::vector<std::pair<int, int>> values;
+        values.reserve(17);
+        for (int i = 0; i < 16; ++i) {
+            values.emplace_back(200 + i, i);
+        }
+        values.emplace_back(216, 216);
+
+        map_t map(values.begin(), values.end(), 0, hash);
+        EXPECT_EQ(map.size(), 17u);
+        for (int i = 0; i < 16; ++i) {
+            EXPECT_TRUE(map.contains(200 + i));
+            EXPECT_EQ(map.at(200 + i), i);
+        }
+        EXPECT_TRUE(map.contains(216));
     }
 }
 
