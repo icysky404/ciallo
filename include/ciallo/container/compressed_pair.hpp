@@ -38,8 +38,9 @@ public:
     ///   Type of the argument to be used to construct the underlying element.
     /// @param arg
     ///   The argument to be used to construct the underlying element.
-    template <std::constructible_from<T> Argument>
-        requires(!std::is_same_v<compressed_pair_element, std::remove_cvref_t<Argument>>)
+    template <typename Argument>
+        requires(std::constructible_from<T, Argument> &&
+                 !std::is_same_v<compressed_pair_element, std::remove_cvref_t<Argument>>)
     constexpr compressed_pair_element(Argument &&arg) noexcept(
         std::is_nothrow_constructible_v<T, Argument>)
         : m_value(std::forward<Argument>(arg)) {}
@@ -53,8 +54,8 @@ public:
     ///   Indices of each element to be used to construct the underlying element.
     /// @param args
     ///   Tuple of arguments to be used to construct the underlying element.
-    template <std::constructible_from<T>... Args, std::size_t... Indices>
-        requires(std::is_constructible_v<T, Args...>)
+    template <typename... Args, std::size_t... Indices>
+        requires(std::constructible_from<T, Args...>)
     constexpr compressed_pair_element(
         std::piecewise_construct_t,
         std::tuple<Args...> args,
@@ -116,8 +117,9 @@ public:
     ///   Type of the argument to be used to construct the underlying element.
     /// @param arg
     ///   The argument to be used to construct the underlying element.
-    template <std::constructible_from<T> Argument>
-        requires(!std::is_same_v<compressed_pair_element, std::remove_cvref_t<Argument>>)
+    template <typename Argument>
+        requires(std::constructible_from<T, Argument> &&
+                 !std::is_same_v<compressed_pair_element, std::remove_cvref_t<Argument>>)
     constexpr compressed_pair_element(Argument &&arg) noexcept(
         std::is_nothrow_constructible_v<T, Argument>)
         : T(std::forward<Argument>(arg)) {}
@@ -131,8 +133,8 @@ public:
     ///   Indices of each element to be used to construct the underlying element.
     /// @param args
     ///   Tuple of arguments to be used to construct the underlying element.
-    template <std::constructible_from<T>... Args, std::size_t... Indices>
-        requires(std::is_constructible_v<T, Args...>)
+    template <typename... Args, std::size_t... Indices>
+        requires(std::constructible_from<T, Args...>)
     constexpr compressed_pair_element(
         std::piecewise_construct_t,
         std::tuple<Args...> args,
@@ -202,7 +204,9 @@ public:
     ///   Argument to be used to construct the first element.
     /// @param second
     ///   Argument to be used to construct the second element.
-    template <std::constructible_from<First> FirstArg, std::constructible_from<Second> SecondArg>
+    template <typename FirstArg, typename SecondArg>
+        requires(std::constructible_from<First, FirstArg> &&
+                 std::constructible_from<Second, SecondArg>)
     constexpr compressed_pair(FirstArg &&first, SecondArg &&second) noexcept(
         std::is_nothrow_constructible_v<First, FirstArg> &&
         std::is_nothrow_constructible_v<Second, SecondArg>)
@@ -219,7 +223,9 @@ public:
     ///   Tuple of arguments to be used to construct the first element.
     /// @param args2
     ///   Tuple of arguments to be used to construct the second element.
-    template <std::constructible_from<First>... Args1, std::constructible_from<Second>... Args2>
+    template <typename... Args1, typename... Args2>
+        requires(std::constructible_from<First, Args1...> &&
+                 std::constructible_from<Second, Args2...>)
     constexpr compressed_pair(
         std::piecewise_construct_t,
         std::tuple<Args1...> args1,
