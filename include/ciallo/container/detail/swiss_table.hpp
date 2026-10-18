@@ -11,6 +11,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace ciallo::detail {
 
@@ -305,11 +306,18 @@ private:
     for (;;) {
         swiss_table_control_group group(states + probe.offset());
         if (std::uint16_t mask = group.match_empty_or_deleted(); mask != 0) {
-            return probe.offset(std::countr_zero(mask));
+            return probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
         }
         probe.next();
     }
 }
+
+/// @brief
+///   Helper struct to align up swiss table allocator.
+template <typename T>
+struct alignas(T) swiss_table_alignment_t {
+    std::byte padding[alignof(T)];
+};
 
 /// @brief
 ///   Helper function to calculate swiss table value offset based on the backing array.
@@ -318,11 +326,11 @@ private:
 /// @param capacity
 ///   Number of elements to be stored in swiss table.
 /// @return
-///   Value offset of the first element that should be stored in swiss table based on backing array.
-///   It is guaranteed that the returned address is aligned up with @c T .
+///   Alignment block offset of the first element that should be stored in swiss table based on
+///   backing array.
 template <typename T>
 [[nodiscard]] constexpr std::size_t swiss_table_value_offset(std::size_t capacity) noexcept {
-    return ((capacity + swiss_table_group_size + alignof(T) - 1) & ~(alignof(T) - 1));
+    return ((capacity + swiss_table_group_size + alignof(T) - 1) / alignof(T));
 }
 
 /// @brief
@@ -333,11 +341,11 @@ template <typename T>
 /// @param capacity
 ///   Number of elements to be stored in swiss table.
 /// @return
-///   Least size of memory that should be allocated to store at least @p capacity elements in swiss
-///   table.
+///   Least number of alignment block that should be allocated to store at least @p capacity
+///   elements in swiss table.
 template <typename T>
-[[nodiscard]] constexpr std::size_t swiss_table_allocate_size(std::size_t capacity) noexcept {
-    return swiss_table_value_offset<T>(capacity) + capacity * sizeof(T);
+[[nodiscard]] constexpr std::size_t swiss_table_block_count(std::size_t capacity) noexcept {
+    return swiss_table_value_offset<T>(capacity) + capacity * (sizeof(T) / alignof(T));
 }
 
 /// @brief
@@ -373,7 +381,12 @@ template <typename T>
     }
 
     constexpr std::size_t last_3_bits = static_cast<std::size_t>(7)
-                                        << (sizeof(std::size_t) * 8 - 3);
+                                        << (std::numeric_limits<std::size_t>::digits - 3);
+
+    // Avoid overflow.
+    if (size > last_3_bits) [[unlikely]] {
+        return (std::numeric_limits<std::size_t>::max)();
+    }
 
     std::size_t leading_zeros = std::countl_zero(size);
     std::size_t max_size      = last_3_bits >> leading_zeros;

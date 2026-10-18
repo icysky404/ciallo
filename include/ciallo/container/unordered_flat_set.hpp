@@ -215,9 +215,13 @@ public:
     };
 
 private:
-    using alloc_traits      = std::allocator_traits<allocator_type>;
-    using byte_alloc        = typename alloc_traits::template rebind_alloc<std::byte>;
-    using byte_alloc_traits = std::allocator_traits<byte_alloc>;
+    using alloc_traits         = std::allocator_traits<allocator_type>;
+    using value_storage_type   = detail::swiss_table_alignment_t<value_type>;
+    using storage_alloc        = typename alloc_traits::template rebind_alloc<value_storage_type>;
+    using storage_alloc_traits = std::allocator_traits<storage_alloc>;
+
+    static_assert(alignof(value_storage_type) == alignof(value_type));
+    static_assert(sizeof(value_type) % alignof(value_type) == 0);
 
     /// @brief
     ///   Destructor for @c unordered_flat_set . Destructor is implemented as a struct because this
@@ -924,7 +928,7 @@ private:
     compressed_pair<size_type, hasher> m_capacity;
     compressed_pair<size_type, key_equal> m_size;
     compressed_pair<std::int8_t *, allocator_type> m_states;
-    compressed_pair<value_type *, byte_alloc> m_values;
+    compressed_pair<value_type *, storage_alloc> m_values;
 };
 
 template <typename Key, typename Hash, typename KeyEqual, typename Allocator>
@@ -954,10 +958,10 @@ operator()() {
     }
 
     // Destroy all elements.
-    const size_type value_offset   = detail::swiss_table_value_offset<value_type>(capacity);
-    const size_type allocated_size = detail::swiss_table_allocate_size<value_type>(capacity);
+    const size_type value_offset = detail::swiss_table_value_offset<value_type>(capacity);
+    const size_type block_count  = detail::swiss_table_block_count<value_type>(capacity);
 
-    auto *backing = static_cast<std::byte *>(backing_array);
+    auto *backing = static_cast<value_storage_type *>(backing_array);
     auto *states  = static_cast<std::int8_t *>(backing_array);
     auto *values  = reinterpret_cast<value_type *>(backing + value_offset);
     while (size != 0) {
@@ -971,7 +975,7 @@ operator()() {
     }
 
     // Deallocate memory.
-    byte_alloc_traits::deallocate(self.m_values.second(), backing, allocated_size);
+    storage_alloc_traits::deallocate(self.m_values.second(), backing, block_count);
 }
 
 template <typename Key, typename Hash, typename KeyEqual, typename Allocator>
@@ -1000,9 +1004,9 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::unordered_flat_set(size_type
     }
 
     const size_type value_offset = detail::swiss_table_value_offset<value_type>(bucket_count);
-    const size_type alloc_size   = detail::swiss_table_allocate_size<value_type>(bucket_count);
+    const size_type block_count  = detail::swiss_table_block_count<value_type>(bucket_count);
 
-    std::byte *memory = byte_alloc_traits::allocate(m_values.second(), alloc_size);
+    value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
     auto *states = reinterpret_cast<std::int8_t *>(memory);
     std::memset(states, detail::swiss_table_empty, bucket_count + detail::swiss_table_group_size);
@@ -1051,9 +1055,9 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::unordered_flat_set(ForwardIt
 
     // Allocate memory.
     const size_type value_offset = detail::swiss_table_value_offset<value_type>(bucket_count);
-    const size_type alloc_size   = detail::swiss_table_allocate_size<value_type>(bucket_count);
+    const size_type block_count  = detail::swiss_table_block_count<value_type>(bucket_count);
 
-    std::byte *memory = byte_alloc_traits::allocate(m_values.second(), alloc_size);
+    value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
     auto *states = reinterpret_cast<std::int8_t *>(memory);
     std::memset(states, detail::swiss_table_empty, bucket_count + detail::swiss_table_group_size);
@@ -1159,8 +1163,9 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::unordered_flat_set(
       m_size(0, other.m_size.second()),
       m_states(nullptr,
                alloc_traits::select_on_container_copy_construction(other.m_states.second())),
-      m_values(nullptr,
-               byte_alloc_traits::select_on_container_copy_construction(other.m_values.second())) {
+      m_values(
+          nullptr,
+          storage_alloc_traits::select_on_container_copy_construction(other.m_values.second())) {
     const size_type bucket_count = detail::swiss_table_size_to_capacity(other.m_size.first());
     if (bucket_count > max_size()) [[unlikely]] {
         throw std::length_error("ciallo::unordered_flat_set");
@@ -1168,9 +1173,9 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::unordered_flat_set(
 
     // Allocate memory.
     const size_type value_offset = detail::swiss_table_value_offset<value_type>(bucket_count);
-    const size_type alloc_size   = detail::swiss_table_allocate_size<value_type>(bucket_count);
+    const size_type block_count  = detail::swiss_table_block_count<value_type>(bucket_count);
 
-    std::byte *memory = byte_alloc_traits::allocate(m_values.second(), alloc_size);
+    value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
     auto *states = reinterpret_cast<std::int8_t *>(memory);
     std::memset(states, detail::swiss_table_empty, bucket_count + detail::swiss_table_group_size);
@@ -1272,18 +1277,18 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::operator=(const unordered_fl
     if (m_capacity.first() < bucket_count) {
         if (m_states.first() != nullptr) {
             // Deallocate memory.
-            auto *backing       = reinterpret_cast<std::byte *>(m_states.first());
-            auto allocated_size = detail::swiss_table_allocate_size<value_type>(m_capacity.first());
-            byte_alloc_traits::deallocate(m_values.second(), backing, allocated_size);
+            auto *backing    = reinterpret_cast<value_storage_type *>(m_states.first());
+            auto block_count = detail::swiss_table_block_count<value_type>(m_capacity.first());
+            storage_alloc_traits::deallocate(m_values.second(), backing, block_count);
 
             m_capacity.first() = 0;
             m_states.first()   = nullptr;
             m_values.first()   = nullptr;
         }
 
-        auto value_offset   = detail::swiss_table_value_offset<value_type>(bucket_count);
-        auto allocated_size = detail::swiss_table_allocate_size<value_type>(bucket_count);
-        std::byte *memory   = byte_alloc_traits::allocate(m_values.second(), allocated_size);
+        std::size_t value_offset   = detail::swiss_table_value_offset<value_type>(bucket_count);
+        std::size_t block_count    = detail::swiss_table_block_count<value_type>(bucket_count);
+        value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
         m_capacity.first() = bucket_count;
         m_states.first()   = reinterpret_cast<std::int8_t *>(memory);
@@ -1381,18 +1386,18 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::operator=(
     if (m_capacity.first() < bucket_count) {
         if (m_states.first() != nullptr) {
             // Deallocate memory.
-            auto *backing       = reinterpret_cast<std::byte *>(m_states.first());
-            auto allocated_size = detail::swiss_table_allocate_size<value_type>(m_capacity.first());
-            byte_alloc_traits::deallocate(m_values.second(), backing, allocated_size);
+            auto *backing    = reinterpret_cast<value_storage_type *>(m_states.first());
+            auto block_count = detail::swiss_table_block_count<value_type>(m_capacity.first());
+            storage_alloc_traits::deallocate(m_values.second(), backing, block_count);
 
             m_capacity.first() = 0;
             m_states.first()   = nullptr;
             m_values.first()   = nullptr;
         }
 
-        auto value_offset   = detail::swiss_table_value_offset<value_type>(bucket_count);
-        auto allocated_size = detail::swiss_table_allocate_size<value_type>(bucket_count);
-        std::byte *memory   = byte_alloc_traits::allocate(m_values.second(), allocated_size);
+        std::size_t value_offset   = detail::swiss_table_value_offset<value_type>(bucket_count);
+        std::size_t block_count    = detail::swiss_table_block_count<value_type>(bucket_count);
+        value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
         m_capacity.first() = bucket_count;
         m_states.first()   = reinterpret_cast<std::int8_t *>(memory);
@@ -1989,9 +1994,9 @@ void unordered_flat_set<Key, Hash, KeyEqual, Allocator>::rehash(size_type count)
         throw std::length_error("ciallo::unordered_flat_set");
     }
 
-    size_type value_offset   = detail::swiss_table_value_offset<value_type>(count);
-    size_type allocated_size = detail::swiss_table_allocate_size<value_type>(count);
-    std::byte *memory        = byte_alloc_traits::allocate(m_values.second(), allocated_size);
+    size_type value_offset     = detail::swiss_table_value_offset<value_type>(count);
+    size_type block_count      = detail::swiss_table_block_count<value_type>(count);
+    value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
 
     auto *states = reinterpret_cast<std::int8_t *>(memory);
     auto *values = reinterpret_cast<value_type *>(memory + value_offset);
