@@ -7,6 +7,7 @@
 #include <cstring>
 #include <functional>
 #include <stdexcept>
+#include <utility>
 
 namespace ciallo {
 
@@ -1136,9 +1137,7 @@ public:
     ///   Number of elements to be stored in this @c unordered_flat_map .
     /// @throw std::length_error
     ///   Thrown if @p count is greater than `max_size()`.
-    void reserve(size_type count) {
-        rehash(detail::swiss_table_size_to_capacity(count));
-    }
+    void reserve(size_type count);
 
     /// @brief
     ///   Get hash function of this @c unordered_flat_map .
@@ -1155,6 +1154,13 @@ public:
     [[nodiscard]] key_equal key_eq() const {
         return m_size.second();
     }
+
+private:
+    /// @brief
+    ///   For internal usage. Actual do rehash.
+    /// @param count
+    ///   Number of new buckets. This value must be 2^N - 1.
+    void rehash_impl(size_type count);
 
 private:
     compressed_pair<size_type, hasher> m_capacity;
@@ -1308,7 +1314,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::unordered_flat_map(
         auto h2        = static_cast<std::int8_t>(h & 0x7F);
 
         detail::swiss_table_probe_sequence probe(h1, bucket_count);
-        for (;;) {
+        const size_type max_probe_time = (bucket_count + 1) / detail::swiss_table_group_size;
+        for (size_type i = 0; i < max_probe_time; ++i) {
             detail::swiss_table_control_group group(states + probe.offset());
             for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
                 auto index  = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1318,7 +1325,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::unordered_flat_map(
                 }
             }
 
-            if (group.match_empty() != 0) {
+            if (group.match_empty() != 0 || i + 1 == max_probe_time) {
                 auto offset = detail::swiss_table_find_first_non_full(states, h1, bucket_count);
                 alloc_traits::construct(m_states.second(), values + offset, *first);
                 detail::swiss_table_set_state(states, bucket_count, offset, h2);
@@ -1656,7 +1663,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::operator=(
         auto h2        = static_cast<std::int8_t>(h & 0x7F);
 
         detail::swiss_table_probe_sequence probe(h1, bucket_count);
-        for (;;) {
+        const size_type max_probe_time = (bucket_count + 1) / detail::swiss_table_group_size;
+        for (size_type i = 0; i < max_probe_time; ++i) {
             detail::swiss_table_control_group group(states + probe.offset());
             for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
                 auto index  = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1666,7 +1674,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::operator=(
                 }
             }
 
-            if (group.match_empty() != 0) {
+            if (group.match_empty() != 0 || i + 1 == max_probe_time) {
                 auto offset = detail::swiss_table_find_first_non_full(states, h1, bucket_count);
                 alloc_traits::construct(m_states.second(), values + offset, element);
                 detail::swiss_table_set_state(states, bucket_count, offset, h2);
@@ -1741,7 +1749,7 @@ template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typen
 std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::iterator, bool>
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(const value_type &value) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(value.first);
@@ -1753,7 +1761,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(const value_t
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1762,9 +1771,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(const value_t
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -1781,13 +1794,15 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(const value_t
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
 std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::iterator, bool>
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(value_type &&value) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(value.first);
@@ -1799,7 +1814,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(value_type &&
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1808,9 +1824,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(value_type &&
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -1827,6 +1847,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(value_type &&
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -1844,7 +1866,7 @@ template <typename K>
 std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::iterator, bool>
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(K &&value) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(value.first);
@@ -1856,7 +1878,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(K &&value) {
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1865,9 +1888,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(K &&value) {
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -1884,6 +1911,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert(K &&value) {
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -1910,7 +1939,7 @@ std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::i
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(const key_type &key,
                                                                              M &&mapped) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -1922,7 +1951,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(con
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1932,9 +1962,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(con
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -1951,6 +1985,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(con
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -1960,7 +1996,7 @@ std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::i
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(key_type &&key,
                                                                              M &&mapped) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -1972,7 +2008,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(key
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -1982,9 +2019,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(key
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -2002,6 +2043,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(key
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2018,7 +2061,7 @@ template <typename K, typename M>
 std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::iterator, bool>
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(K &&key, M &&mapped) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -2030,7 +2073,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(K &
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2040,9 +2084,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(K &
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -2060,6 +2108,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::insert_or_assign(K &
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2069,7 +2119,7 @@ std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::i
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(const key_type &key,
                                                                         Args &&...args) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -2081,7 +2131,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(const ke
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2090,9 +2141,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(const ke
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -2111,6 +2166,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(const ke
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2120,7 +2177,7 @@ std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::i
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(key_type &&key,
                                                                         Args &&...args) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -2132,7 +2189,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(key_type
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2141,9 +2199,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(key_type
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -2162,6 +2224,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(key_type
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2177,7 +2241,7 @@ template <typename K, typename... Args>
 std::pair<typename unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::iterator, bool>
 unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(K &&key, Args &&...args) {
     if (m_capacity.first() == 0) {
-        rehash(0xF);
+        rehash_impl(0xF);
     }
 
     const std::size_t hash = m_capacity.second()(key);
@@ -2189,7 +2253,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(K &&key,
     std::int8_t *states = m_states.first();
     value_type *values  = m_values.first();
 
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             std::size_t offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2198,9 +2263,13 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(K &&key,
             }
         }
 
-        if (group.match_empty() != 0) {
+        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
-                rehash(detail::swiss_table_next_capacity(m_capacity.first()));
+                rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
+                states = m_states.first();
+                values = m_values.first();
+            } else if (i != 0 && i + 1 == max_probe_time) {
+                rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
             }
@@ -2219,6 +2288,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::try_emplace(K &&key,
 
         probe.next();
     }
+
+    std::unreachable();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2401,7 +2472,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::count(const key_type
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2415,6 +2487,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::count(const key_type
         }
         probe.next();
     }
+    return 0;
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2440,7 +2513,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::count(const K &key) 
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2454,6 +2528,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::count(const K &key) 
         }
         probe.next();
     }
+    return 0;
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2472,7 +2547,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const key_type 
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2486,6 +2562,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const key_type 
         }
         probe.next();
     }
+    return end();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2504,7 +2581,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const key_type 
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2518,6 +2596,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const key_type 
         }
         probe.next();
     }
+    return end();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2543,7 +2622,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const K &key) {
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2557,6 +2637,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const K &key) {
         }
         probe.next();
     }
+    return end();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2582,7 +2663,8 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const K &key) c
     const auto h2          = static_cast<std::int8_t>(hash & 0x7F);
 
     detail::swiss_table_probe_sequence probe(h1, capacity);
-    for (;;) {
+    const size_type max_probe_time = (m_capacity.first() + 1) / detail::swiss_table_group_size;
+    for (size_type i = 0; i < max_probe_time; ++i) {
         detail::swiss_table_control_group group(states + probe.offset());
         for (std::uint16_t mask = group.match(h2); mask != 0; mask &= mask - 1) {
             auto offset = probe.offset(static_cast<std::size_t>(std::countr_zero(mask)));
@@ -2596,6 +2678,7 @@ unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::find(const K &key) c
         }
         probe.next();
     }
+    return end();
 }
 
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
@@ -2609,6 +2692,25 @@ void unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::rehash(size_typ
         throw std::length_error("ciallo::unordered_flat_map");
     }
 
+    rehash_impl(count);
+}
+
+template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
+void unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::reserve(size_type count) {
+    count = detail::swiss_table_size_to_capacity(count);
+    if (count <= m_capacity.first()) [[unlikely]] {
+        return;
+    }
+
+    if (count > max_size()) [[unlikely]] {
+        throw std::length_error("ciallo::unordered_flat_map");
+    }
+
+    rehash_impl(count);
+}
+
+template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
+void unordered_flat_map<Key, Mapped, Hash, KeyEqual, Allocator>::rehash_impl(size_type count) {
     size_type value_offset     = detail::swiss_table_value_offset<value_type>(count);
     size_type block_count      = detail::swiss_table_block_count<value_type>(count);
     value_storage_type *memory = storage_alloc_traits::allocate(m_values.second(), block_count);
