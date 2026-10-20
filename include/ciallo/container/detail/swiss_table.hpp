@@ -1,8 +1,9 @@
 #pragma once
 
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64) ||             \
+    defined(_M_ARM64EC)
 #    include <emmintrin.h>
-#elif defined(__arm__) || defined(__aarch64__)
+#elif defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
 #    include <arm_neon.h>
 #else
 #    error "unsupported architecture."
@@ -31,7 +32,8 @@ inline constexpr std::int8_t swiss_table_deleted = -2;
 ///   Swiss table empty flag.
 inline constexpr std::int8_t swiss_table_empty = -128;
 
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64) ||             \
+    defined(_M_ARM64EC)
 /// @brief
 ///   Swiss table control group represented in SIMD register.
 class swiss_table_control_group {
@@ -121,7 +123,7 @@ private:
     ///   A group of control flags.
     __m128i m_value;
 };
-#elif defined(__arm__) || defined(__aarch64__)
+#elif defined(__arm__) || defined(__aarch64__) || defined(_M_ARM) || defined(_M_ARM64)
 /// @brief
 ///   Swiss table control group represented in SIMD register.
 class swiss_table_control_group {
