@@ -1533,12 +1533,12 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::insert(const value_type &val
             }
         }
 
-        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
+        if (auto empty_mask = group.match_empty(); empty_mask != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
                 rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
                 states = m_states.first();
                 values = m_values.first();
-            } else if (i != 0 && i + 1 == max_probe_time) {
+            } else if (empty_mask == 0 && i + 1 == max_probe_time) {
                 rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
@@ -1586,12 +1586,12 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::insert(value_type &&value) {
             }
         }
 
-        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
+        if (auto empty_mask = group.match_empty(); empty_mask != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
                 rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
                 states = m_states.first();
                 values = m_values.first();
-            } else if (i != 0 && i + 1 == max_probe_time) {
+            } else if (empty_mask == 0 && i + 1 == max_probe_time) {
                 rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
@@ -1647,12 +1647,12 @@ unordered_flat_set<Key, Hash, KeyEqual, Allocator>::insert(K &&key) {
             }
         }
 
-        if (group.match_empty() != 0 || i + 1 == max_probe_time) {
+        if (auto empty_mask = group.match_empty(); empty_mask != 0 || i + 1 == max_probe_time) {
             if (m_capacity.first() - m_size.first() <= (m_capacity.first() >> 3)) {
                 rehash_impl(detail::swiss_table_next_capacity(m_capacity.first()));
                 states = m_states.first();
                 values = m_values.first();
-            } else if (i != 0 && i + 1 == max_probe_time) {
+            } else if (empty_mask == 0 && i + 1 == max_probe_time) {
                 rehash_impl(m_capacity.first());
                 states = m_states.first();
                 values = m_values.first();
