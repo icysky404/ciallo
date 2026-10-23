@@ -6,6 +6,7 @@ Checks: "
     -modernize-avoid-c-arrays,
     -modernize-use-trailing-return-type,
     -modernize-use-nodiscard,
+    -modernize-return-braced-init-list,
     performance-*,
     -performance-no-int-to-ptr,
     -performance-enum-size,
