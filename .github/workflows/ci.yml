@@ -31,7 +31,7 @@ jobs:
             generator: Ninja
           - name: Windows (MSVC)
             os: windows-latest
-            generator: Visual Studio 17 2022
+            generator: ""
     env:
       CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
     steps:
@@ -48,7 +48,7 @@ jobs:
       - name: Configure
         run: >
           cmake -S . -B build
-          -G "${{ matrix.generator }}"
+          ${{ matrix.generator != '' && format('-G "{0}"', matrix.generator) || '' }}
           -DCMAKE_BUILD_TYPE=Release
           -DCIALLO_BUILD_TESTS=ON
 
