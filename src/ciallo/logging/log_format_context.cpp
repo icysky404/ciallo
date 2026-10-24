@@ -36,7 +36,7 @@ ciallo::log_format_context::log_format_context(log_format_context &&other) noexc
 
 ciallo::log_format_context::~log_format_context() {
     if (m_front != m_inline_buffer) {
-        ::operator delete(m_front, static_cast<std::size_t>(m_alloc_end - m_front));
+        ::operator delete(m_front);
     }
 }
 
@@ -62,7 +62,7 @@ log_format_context &log_format_context::operator=(log_format_context &&other) no
     }
 
     if (m_front != m_inline_buffer) {
-        ::operator delete(m_front, static_cast<std::size_t>(m_alloc_end - m_front));
+        ::operator delete(m_front);
         m_front     = m_inline_buffer;
         m_back      = m_front;
         m_alloc_end = m_front + sizeof(m_inline_buffer);
@@ -96,7 +96,7 @@ void log_format_context::reserve(std::size_t new_capacity) {
     std::memcpy(buffer, m_front, count);
 
     if (m_front != m_inline_buffer) {
-        ::operator delete(m_front, static_cast<std::size_t>(m_alloc_end - m_front));
+        ::operator delete(m_front);
     }
 
     m_front     = buffer;

@@ -63,7 +63,12 @@ target_include_directories(
 )
 
 # Compile options.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if(MSVC)
+    target_compile_options(
+        ciallo
+        PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324"
+    )
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(
         ciallo
         PRIVATE "-Wall" "-Wextra" "-pedantic" "-Winline" "-Wundef" "-Wreorder"

@@ -37,7 +37,7 @@ static auto file_basename(std::string_view file) noexcept -> std::string_view {
     return (position == std::string_view::npos) ? file : file.substr(position + 1);
 }
 
-ciallo::console_log_sink::console_log_sink() noexcept : log_sink(), m_mutex(), m_stdout(::stdout) {}
+ciallo::console_log_sink::console_log_sink() noexcept : log_sink(), m_mutex(), m_stdout(stdout) {}
 
 ciallo::console_log_sink::~console_log_sink() = default;
 

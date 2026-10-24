@@ -1,12 +1,13 @@
 #pragma once
 
+#include "ciallo/configuration.hpp"
 #include "ciallo/logging/log_message.hpp"
 
 namespace ciallo {
 
 /// @brief
 ///   Base class for all log sinks.
-class log_sink {
+class CIALLO_API log_sink {
 public:
     /// @brief
     ///   Create this @c log_sink .

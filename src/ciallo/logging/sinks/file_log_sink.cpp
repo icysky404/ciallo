@@ -42,7 +42,7 @@ ciallo::file_log_sink::file_log_sink(std::string_view path)
     }
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    m_file = ::_wfopen(full_path.c_str(), L"a");
+    errno = ::_wfopen_s(&m_file, full_path.c_str(), L"a");
 #else
     m_file = std::fopen(full_path.c_str(), "a");
 #endif

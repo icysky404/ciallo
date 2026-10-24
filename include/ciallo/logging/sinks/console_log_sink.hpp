@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ciallo/configuration.hpp"
 #include "ciallo/logging/log_sink.hpp"
 
 #include <cstdio>

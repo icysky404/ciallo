@@ -221,8 +221,8 @@ public:
     /// @brief
     ///   Get the global logger singleton instance. This method is concurrent safe.
     /// @note
-    ///   The global singleton instance is created with no logger. User must manually add at least
-    ///   one logger to enable it.
+    ///   The global singleton instance is created with no sink. User must manually add at least one
+    ///   sink to enable it.
     /// @return
     ///   The global logger singleton instance.
     [[nodiscard]] static logger &singleton() noexcept;
