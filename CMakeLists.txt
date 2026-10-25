@@ -6,6 +6,7 @@ option(CIALLO_SHARED_LIBRARY "Build ciallo as shared library." OFF)
 option(CIALLO_INSTALL_TARGET "Install ciallo targets." ON)
 option(CIALLO_BUILD_TESTS "Build unit tests for ciallo." OFF)
 option(CIALLO_BUILD_BENCHMARK "Build benchmarks for ciallo." OFF)
+option(CIALLO_ENABLE_ASAN "Build with AddressSanitizer." OFF)
 
 # Generate configuration header.
 configure_file(
@@ -66,14 +67,23 @@ target_include_directories(
 if(MSVC)
     target_compile_options(
         ciallo
-        PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324"
+        PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324" "/wd4251"
     )
+
+    if(CIALLO_ENABLE_ASAN)
+        message(FATAL_ERROR "AddressSanitizer is not supported for MSVC.")
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(
         ciallo
         PRIVATE "-Wall" "-Wextra" "-pedantic" "-Winline" "-Wundef" "-Wreorder"
                 "-Wshadow" "-Wold-style-cast"
     )
+
+    if(CIALLO_ENABLE_ASAN)
+        target_compile_options(ciallo PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+        target_link_options(ciallo PUBLIC "-fsanitize=address")
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     include(CheckCXXCompilerFlag)
     target_compile_options(
@@ -96,6 +106,11 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
             ciallo
             PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-cast-function-type>
         )
+    endif()
+
+    if(CIALLO_ENABLE_ASAN)
+        target_compile_options(ciallo PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+        target_link_options(ciallo PUBLIC "-fsanitize=address")
     endif()
 endif()
 
@@ -159,6 +174,16 @@ if(CIALLO_BUILD_TESTS)
     file(GLOB_RECURSE CIALLO_TEST_SOURCE_FILES "test/*.cpp")
     add_executable(ciallo-test ${CIALLO_TEST_SOURCE_FILES})
     add_executable(ciallo::test ALIAS ciallo-test)
+
+    # Enable AddressSanitizer for the library, tests, and benchmarks.
+    if(CIALLO_ENABLE_ASAN)
+        if(MSVC)
+            message(FATAL_ERROR "AddressSanitizer is not supported for MSVC.")
+        else()
+            target_compile_options(ciallo-test PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+            target_link_options(ciallo-test PRIVATE "-fsanitize=address")
+        endif()
+    endif()
 
     target_link_libraries(
         ciallo-test
