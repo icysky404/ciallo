@@ -54,6 +54,42 @@ static constexpr std::uint32_t crc32_polynomial = 0xEDB88320U;
     return data;
 }
 
+/// @brief
+///   Input sizes that are close to every transition of the vectorized CRC32 implementations:
+///   the portable tail, each vector width, and each fold stride.
+static constexpr std::size_t crc32_boundary_sizes[] = {
+    7,    8,    9,    15,   16,   17,    31,    32,    33,    63,    64,    65,    127,   128,
+    129,  255,  256,  257,  511,  512,   513,   1023,  1024,  1025,  2047,  2048,  2049,  4095,
+    4096, 4097, 8191, 8192, 8193, 16383, 16384, 16385, 32767, 32768, 32769, 65535, 65536, 65537,
+};
+
+/// @brief
+///   Number of start offsets to test for unaligned inputs. 64 covers every alignment relative to
+///   a 64-byte cache line.
+static constexpr std::size_t crc32_alignment_count = 64;
+
+/// @brief
+///   Copy @p size bytes from @p source into a buffer holding exactly @p offset + @p size bytes.
+///   With AddressSanitizer enabled, any access outside that range is reported immediately.
+/// @param source
+///   Buffer containing the bytes to copy.
+/// @param size
+///   Number of bytes to copy.
+/// @param offset
+///   Offset of the copied bytes inside the returned buffer.
+/// @return
+///   Exact-size buffer containing the copied input.
+[[nodiscard]] static std::vector<std::uint8_t>
+make_exact_size_buffer(const std::vector<std::uint8_t> &source,
+                       std::size_t size,
+                       std::size_t offset) {
+    std::vector<std::uint8_t> storage(offset + size);
+    if (size != 0) {
+        std::memcpy(storage.data() + offset, source.data(), size);
+    }
+    return storage;
+}
+
 TEST(crc32, known_vectors) {
     // Check values from the CRC-32/ISO-HDLC specification and common tooling.
     constexpr std::pair<std::string_view, std::uint32_t> vectors[] = {
@@ -91,7 +127,7 @@ TEST(crc32, matches_reference_for_all_small_sizes) {
 }
 
 TEST(crc32, matches_reference_at_fold_boundaries) {
-    // Boundaries of every vector width and fold stride used by the x86 implementations.
+    // Boundaries of every vector width and fold stride used by the vectorized implementations.
     constexpr std::size_t sizes[] = {
         15,   16,   17,   31,   32,    33,    63,    64,    65,    127,   128,   129,   255,
         256,  257,  511,  512,  513,   1023,  1024,  1025,  2047,  2048,  2049,  4095,  4096,
@@ -113,7 +149,8 @@ TEST(crc32, matches_reference_for_random_sizes) {
     constexpr std::size_t max_size = 16384;
     const auto data                = make_test_data(max_size + 16, 3);
 
-    std::mt19937_64 engine(4);
+    std::random_device random_dev;
+    std::mt19937_64 engine(random_dev());
     std::uniform_int_distribution<std::size_t> size_distribution(0, max_size);
     std::uniform_int_distribution<std::size_t> offset_distribution(0, 15);
 
@@ -157,4 +194,40 @@ TEST(crc32, large_input_matches_reference) {
     const auto data            = make_test_data(size, 6);
 
     EXPECT_EQ(crc32(data.data(), size), reference_crc32(data.data(), size));
+}
+
+TEST(crc32, exact_size_allocation_for_all_small_sizes) {
+    // Every input owns exactly its own bytes, so AddressSanitizer reports any read outside the
+    // input. Varying the offset also exercises unaligned starts for every small size.
+    constexpr std::size_t max_size = 600;
+
+    for (std::size_t size = 0; size <= max_size; ++size) {
+        const auto source            = make_test_data(size, 9);
+        const std::uint32_t expected = reference_crc32(source.data(), size);
+
+        for (std::size_t offset = 0; offset < crc32_alignment_count; ++offset) {
+            const auto storage = make_exact_size_buffer(source, size, offset);
+
+            EXPECT_EQ(crc32(storage.data() + offset, size), expected)
+                << "size=" << size << ", offset=" << offset;
+        }
+    }
+}
+
+TEST(crc32, exact_size_allocation_at_fold_boundaries) {
+    // Check each fold boundary and its immediate neighbours at every start alignment. Reads past
+    // the end or before the start of the exact-size allocation are caught by AddressSanitizer.
+    for (const std::size_t boundary : crc32_boundary_sizes) {
+        for (const std::size_t size : {boundary - 1, boundary, boundary + 1}) {
+            const auto source            = make_test_data(size, 10);
+            const std::uint32_t expected = reference_crc32(source.data(), size);
+
+            for (std::size_t offset = 0; offset < crc32_alignment_count; ++offset) {
+                const auto storage = make_exact_size_buffer(source, size, offset);
+
+                EXPECT_EQ(crc32(storage.data() + offset, size), expected)
+                    << "size=" << size << ", offset=" << offset;
+            }
+        }
+    }
 }

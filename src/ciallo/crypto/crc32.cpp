@@ -8,6 +8,26 @@
 #    else
 #        include <cpuid.h>
 #    endif
+#elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        include <arm64_neon.h>
+#    else
+#        include <arm_neon.h>
+#    endif
+#    if defined(__linux__)
+#        include <sys/auxv.h>
+#        if __has_include(<asm/hwcap.h>)
+#            include <asm/hwcap.h>
+#        endif
+#        ifndef HWCAP_PMULL
+#            define HWCAP_PMULL (1UL << 4)
+#        endif
+#    elif defined(_WIN32)
+#        ifndef WIN32_LEAN_AND_MEAN
+#            define WIN32_LEAN_AND_MEAN
+#        endif
+#        include <Windows.h>
+#    endif
 #endif
 
 #include <bit>
@@ -371,6 +391,19 @@ crc32_portable(std::uint32_t crc, const std::uint8_t *data, std::size_t size) no
     return crc;
 }
 
+// Multipliers for folding 128-bit polynomials over GF(2), for the reflected CRC-32 polynomial.
+// Generated with x^k mod G(x).
+[[maybe_unused]] static constexpr std::uint64_t crc32_x95       = 0xccaa009eULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x159      = 0xae689191ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x223      = 0x81256527ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x287      = 0xf1da05aaULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x479      = 0x1d9513d7ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x543      = 0x8f352d95ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x991      = 0x910eeec1ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_x1055     = 0x33fff533ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_barrett_1 = 0xb4e5b025f7011641ULL;
+[[maybe_unused]] static constexpr std::uint64_t crc32_barrett_2 = 0x00000001db710641ULL;
+
 #if defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||               \
     defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
 #    if defined(_MSC_VER)
@@ -380,6 +413,10 @@ crc32_portable(std::uint32_t crc, const std::uint8_t *data, std::size_t size) no
 #        define CIALLO_CRC32_TARGET_PCLMUL  __attribute__((target("sse4.1,pclmul")))
 #        define CIALLO_CRC32_TARGET_VPCLMUL __attribute__((target("avx2,vpclmulqdq")))
 #    endif
+
+// Multipliers for folding 256-bit polynomials over GF(2).
+static constexpr std::uint64_t crc32_x2015 = 0xe95c1271ULL;
+static constexpr std::uint64_t crc32_x2079 = 0xce3371cbULL;
 
 /// @brief
 ///   CPUID for x86 CPU.
@@ -400,21 +437,6 @@ static void cpuid(std::uint32_t leaf,
     __cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);
 #    endif
 }
-
-// Multipliers for folding 128/256-bit polynomials over GF(2), for the reflected CRC-32 polynomial.
-// Generated with x^k mod G(x).
-static constexpr std::uint64_t crc32_x95       = 0xccaa009eULL;
-static constexpr std::uint64_t crc32_x159      = 0xae689191ULL;
-static constexpr std::uint64_t crc32_x223      = 0x81256527ULL;
-static constexpr std::uint64_t crc32_x287      = 0xf1da05aaULL;
-static constexpr std::uint64_t crc32_x479      = 0x1d9513d7ULL;
-static constexpr std::uint64_t crc32_x543      = 0x8f352d95ULL;
-static constexpr std::uint64_t crc32_x991      = 0x910eeec1ULL;
-static constexpr std::uint64_t crc32_x1055     = 0x33fff533ULL;
-static constexpr std::uint64_t crc32_x2015     = 0xe95c1271ULL;
-static constexpr std::uint64_t crc32_x2079     = 0xce3371cbULL;
-static constexpr std::uint64_t crc32_barrett_1 = 0xb4e5b025f7011641ULL;
-static constexpr std::uint64_t crc32_barrett_2 = 0x00000001db710641ULL;
 
 [[nodiscard]] CIALLO_CRC32_TARGET_PCLMUL static __m128i
 crc32_fold_128(__m128i source, __m128i destination, __m128i multipliers) noexcept {
@@ -772,6 +794,207 @@ less_than_16:
 }
 #endif
 
+#if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+#    if defined(_MSC_VER)
+#        define CIALLO_CRC32_TARGET_PMULL
+#    elif defined(__clang__)
+#        define CIALLO_CRC32_TARGET_PMULL __attribute__((target("arch=armv8-a+aes")))
+#    else
+#        define CIALLO_CRC32_TARGET_PMULL __attribute__((target("arch=armv8-a+crypto")))
+#    endif
+
+/// @brief
+///   Carry-less multiplication of the low 64-bit polynomials of @p lhs and @p rhs.
+[[nodiscard]] CIALLO_CRC32_TARGET_PMULL static uint64x2_t crc32_clmul_low(uint64x2_t lhs,
+                                                                          uint64x2_t rhs) noexcept {
+#    if defined(_MSC_VER) && !defined(__clang__)
+    return vreinterpretq_u64_p128(vmull_p64(vget_low_p64(vreinterpretq_p64_u64(lhs)),
+                                            vget_low_p64(vreinterpretq_p64_u64(rhs))));
+#    else
+    return vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64(vreinterpretq_p64_u64(lhs), 0),
+                                            vgetq_lane_p64(vreinterpretq_p64_u64(rhs), 0)));
+#    endif
+}
+
+/// @brief
+///   Carry-less multiplication of the high 64-bit polynomials of @p lhs and @p rhs.
+[[nodiscard]] CIALLO_CRC32_TARGET_PMULL static uint64x2_t
+crc32_clmul_high(uint64x2_t lhs, uint64x2_t rhs) noexcept {
+    return vreinterpretq_u64_p128(
+        vmull_high_p64(vreinterpretq_p64_u64(lhs), vreinterpretq_p64_u64(rhs)));
+}
+
+/// @brief
+///   Carry-less multiplication of the low 64-bit polynomial of @p lhs and the high 64-bit
+///   polynomial of @p rhs.
+[[nodiscard]] CIALLO_CRC32_TARGET_PMULL static uint64x2_t
+crc32_clmul_mixed(uint64x2_t lhs, uint64x2_t rhs) noexcept {
+#    if defined(_MSC_VER) && !defined(__clang__)
+    return vreinterpretq_u64_p128(vmull_p64(vget_low_p64(vreinterpretq_p64_u64(lhs)),
+                                            vget_high_p64(vreinterpretq_p64_u64(rhs))));
+#    else
+    return vreinterpretq_u64_p128(vmull_p64(vgetq_lane_p64(vreinterpretq_p64_u64(lhs), 0),
+                                            vgetq_lane_p64(vreinterpretq_p64_u64(rhs), 1)));
+#    endif
+}
+
+[[nodiscard]] CIALLO_CRC32_TARGET_PMULL static uint64x2_t
+crc32_fold_128(uint64x2_t source, uint64x2_t destination, uint64x2_t multipliers) noexcept {
+    destination = veorq_u64(destination, crc32_clmul_low(source, multipliers));
+    destination = veorq_u64(destination, crc32_clmul_high(source, multipliers));
+    return destination;
+}
+
+/// @brief
+///   Final 128-bit polynomial to 32-bit CRC reduction.
+CIALLO_CRC32_TARGET_PMULL static std::uint32_t crc32_reduce_128(uint64x2_t value,
+                                                                uint64x2_t multipliers) noexcept {
+    const uint64x2_t barrett =
+        vcombine_u64(vcreate_u64(crc32_barrett_1), vcreate_u64(crc32_barrett_2));
+
+    value = veorq_u64(crc32_clmul_mixed(value, multipliers), vextq_u64(value, vdupq_n_u64(0), 1));
+
+    uint64x2_t reduced = crc32_clmul_low(value, barrett);
+    reduced            = crc32_clmul_mixed(reduced, barrett);
+    value              = veorq_u64(value, reduced);
+
+    return static_cast<std::uint32_t>(vgetq_lane_u64(value, 1));
+}
+
+/// @brief
+///   CRC32 implementation with @c pmull instruction.
+[[nodiscard]] CIALLO_CRC32_TARGET_PMULL static std::uint32_t
+crc32_pmull(std::uint32_t crc, const std::uint8_t *data, std::size_t size) noexcept {
+    constexpr std::size_t vector_size = 16;
+    constexpr std::size_t stride      = 8 * vector_size;
+
+    const uint64x2_t m128 = vcombine_u64(vcreate_u64(crc32_x159), vcreate_u64(crc32_x95));
+    const uint64x2_t m8v  = vcombine_u64(vcreate_u64(crc32_x1055), vcreate_u64(crc32_x991));
+    const uint64x2_t m4v  = vcombine_u64(vcreate_u64(crc32_x543), vcreate_u64(crc32_x479));
+    const uint64x2_t m2v  = vcombine_u64(vcreate_u64(crc32_x287), vcreate_u64(crc32_x223));
+    const uint64x2_t m1v  = m128;
+
+    uint64x2_t v0 = vdupq_n_u64(0);
+    uint64x2_t v1 = vdupq_n_u64(0);
+    uint64x2_t v2 = vdupq_n_u64(0);
+    uint64x2_t v3 = vdupq_n_u64(0);
+    uint64x2_t v4 = vdupq_n_u64(0);
+    uint64x2_t v5 = vdupq_n_u64(0);
+    uint64x2_t v6 = vdupq_n_u64(0);
+    uint64x2_t v7 = vdupq_n_u64(0);
+
+    uint64x2_t x0 = vcombine_u64(vcreate_u64(static_cast<std::uint64_t>(crc)), vcreate_u64(0));
+
+    if (size < vector_size) {
+        return crc32_portable(crc, data, size);
+    }
+
+    if (size < stride) {
+        v0 = veorq_u64(vld1q_u64(reinterpret_cast<const std::uint64_t *>(data)), x0);
+        if (size < 2 * vector_size) {
+            data += vector_size;
+            goto less_than_1v;
+        }
+
+        v1 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + vector_size));
+        if (size < 4 * vector_size) {
+            data += 2 * vector_size;
+            goto less_than_2v;
+        }
+
+        v2 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 2 * vector_size));
+        v3 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 3 * vector_size));
+        data += 4 * vector_size;
+    } else {
+        v0 = veorq_u64(vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 0 * vector_size)),
+                       x0);
+        v1 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 1 * vector_size));
+        v2 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 2 * vector_size));
+        v3 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 3 * vector_size));
+        v4 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 4 * vector_size));
+        v5 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 5 * vector_size));
+        v6 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 6 * vector_size));
+        v7 = vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 7 * vector_size));
+        data += stride;
+
+        while (size >= 2 * stride) {
+            v0 = crc32_fold_128(
+                v0, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 0 * vector_size)),
+                m8v);
+            v1 = crc32_fold_128(
+                v1, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 1 * vector_size)),
+                m8v);
+            v2 = crc32_fold_128(
+                v2, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 2 * vector_size)),
+                m8v);
+            v3 = crc32_fold_128(
+                v3, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 3 * vector_size)),
+                m8v);
+            v4 = crc32_fold_128(
+                v4, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 4 * vector_size)),
+                m8v);
+            v5 = crc32_fold_128(
+                v5, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 5 * vector_size)),
+                m8v);
+            v6 = crc32_fold_128(
+                v6, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 6 * vector_size)),
+                m8v);
+            v7 = crc32_fold_128(
+                v7, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 7 * vector_size)),
+                m8v);
+            data += stride;
+            size -= stride;
+        }
+
+        // Collapse the eight accumulators (at most stride bytes remain).
+        v0 = crc32_fold_128(v0, v4, m4v);
+        v1 = crc32_fold_128(v1, v5, m4v);
+        v2 = crc32_fold_128(v2, v6, m4v);
+        v3 = crc32_fold_128(v3, v7, m4v);
+
+        if ((size & (4 * vector_size)) != 0) {
+            v0 = crc32_fold_128(
+                v0, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 0 * vector_size)),
+                m4v);
+            v1 = crc32_fold_128(
+                v1, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 1 * vector_size)),
+                m4v);
+            v2 = crc32_fold_128(
+                v2, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 2 * vector_size)),
+                m4v);
+            v3 = crc32_fold_128(
+                v3, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 3 * vector_size)),
+                m4v);
+            data += 4 * vector_size;
+        }
+    }
+
+    // Collapse the four remaining accumulators (fewer than 4*VL bytes remain).
+    v0 = crc32_fold_128(v0, v2, m2v);
+    v1 = crc32_fold_128(v1, v3, m2v);
+
+    if ((size & (2 * vector_size)) != 0) {
+        v0 = crc32_fold_128(
+            v0, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 0 * vector_size)), m2v);
+        v1 = crc32_fold_128(
+            v1, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data + 1 * vector_size)), m2v);
+        data += 2 * vector_size;
+    }
+
+less_than_2v:
+    v0 = crc32_fold_128(v0, v1, m1v);
+    if ((size & vector_size) != 0) {
+        v0 = crc32_fold_128(v0, vld1q_u64(reinterpret_cast<const std::uint64_t *>(data)), m1v);
+        data += vector_size;
+    }
+
+less_than_1v:
+    x0 = v0;
+
+    return crc32_portable(crc32_reduce_128(x0, m128), data, size & 15);
+}
+#endif
+
 /// @brief
 ///   CRC32 implementation function pointer.
 using crc32_impl_fn = std::uint32_t (*)(std::uint32_t, const std::uint8_t *, std::size_t);
@@ -834,6 +1057,27 @@ using crc32_impl_fn = std::uint32_t (*)(std::uint32_t, const std::uint8_t *, std
     }
 
     return &crc32_portable;
+#elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+    if constexpr (std::endian::native != std::endian::little) {
+        return &crc32_portable;
+    } else {
+#    if defined(__linux__)
+        const unsigned long hwcap = getauxval(AT_HWCAP);
+        if ((hwcap & HWCAP_PMULL) != 0) {
+            return &crc32_pmull;
+        }
+#    elif defined(__APPLE__)
+        // All Apple-designed ARM64 processors implement the crypto extensions.
+        return &crc32_pmull;
+#    elif defined(_WIN32)
+#        if defined(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE)
+        if (IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE) != 0) {
+            return &crc32_pmull;
+        }
+#        endif
+#    endif
+        return &crc32_portable;
+    }
 #else
     return &crc32_portable;
 #endif

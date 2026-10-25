@@ -6,6 +6,7 @@ option(CIALLO_SHARED_LIBRARY "Build ciallo as shared library." OFF)
 option(CIALLO_INSTALL_TARGET "Install ciallo targets." ON)
 option(CIALLO_BUILD_TESTS "Build unit tests for ciallo." OFF)
 option(CIALLO_BUILD_BENCHMARK "Build benchmarks for ciallo." OFF)
+option(CIALLO_ENABLE_ASAN "Build with AddressSanitizer." OFF)
 
 # Generate configuration header.
 configure_file(
@@ -68,12 +69,25 @@ if(MSVC)
         ciallo
         PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324"
     )
+
+    if(CIALLO_ENABLE_ASAN)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+            message(FATAL_ERROR "AddressSanitizer requires a 64-bit MSVC target.")
+        endif()
+        target_compile_options(ciallo PRIVATE "/fsanitize=address" "/Zi")
+        target_link_options(ciallo PUBLIC "/fsanitize=address" "/INCREMENTAL:NO")
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(
         ciallo
         PRIVATE "-Wall" "-Wextra" "-pedantic" "-Winline" "-Wundef" "-Wreorder"
                 "-Wshadow" "-Wold-style-cast"
     )
+
+    if(CIALLO_ENABLE_ASAN)
+        target_compile_options(ciallo PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+        target_link_options(ciallo PUBLIC "-fsanitize=address")
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     include(CheckCXXCompilerFlag)
     target_compile_options(
@@ -96,6 +110,11 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
             ciallo
             PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-cast-function-type>
         )
+    endif()
+
+    if(CIALLO_ENABLE_ASAN)
+        target_compile_options(ciallo PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+        target_link_options(ciallo PUBLIC "-fsanitize=address")
     endif()
 endif()
 
@@ -159,6 +178,21 @@ if(CIALLO_BUILD_TESTS)
     file(GLOB_RECURSE CIALLO_TEST_SOURCE_FILES "test/*.cpp")
     add_executable(ciallo-test ${CIALLO_TEST_SOURCE_FILES})
     add_executable(ciallo::test ALIAS ciallo-test)
+
+    # Enable AddressSanitizer for the library, tests, and benchmarks.
+    if(CIALLO_ENABLE_ASAN)
+        if(MSVC)
+            if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+                message(FATAL_ERROR "AddressSanitizer requires a 64-bit MSVC target.")
+            endif()
+
+            target_compile_options(ciallo-test PRIVATE "/fsanitize=address" "/Zi")
+            target_link_options(ciallo-test PRIVATE "/fsanitize=address" "/INCREMENTAL:NO")
+        else()
+            target_compile_options(ciallo-test PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
+            target_link_options(ciallo-test PRIVATE "-fsanitize=address")
+        endif()
+    endif()
 
     target_link_libraries(
         ciallo-test
