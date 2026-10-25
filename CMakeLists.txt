@@ -67,15 +67,11 @@ target_include_directories(
 if(MSVC)
     target_compile_options(
         ciallo
-        PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324"
+        PRIVATE "/W4" "/permissive-" "/volatile:iso" "/wd4324" "/wd4251"
     )
 
     if(CIALLO_ENABLE_ASAN)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-            message(FATAL_ERROR "AddressSanitizer requires a 64-bit MSVC target.")
-        endif()
-        target_compile_options(ciallo PRIVATE "/fsanitize=address" "/Zi")
-        target_link_options(ciallo PUBLIC "/fsanitize=address" "/INCREMENTAL:NO")
+        message(FATAL_ERROR "AddressSanitizer is not supported for MSVC.")
     endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(
@@ -182,12 +178,7 @@ if(CIALLO_BUILD_TESTS)
     # Enable AddressSanitizer for the library, tests, and benchmarks.
     if(CIALLO_ENABLE_ASAN)
         if(MSVC)
-            if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-                message(FATAL_ERROR "AddressSanitizer requires a 64-bit MSVC target.")
-            endif()
-
-            target_compile_options(ciallo-test PRIVATE "/fsanitize=address" "/Zi")
-            target_link_options(ciallo-test PRIVATE "/fsanitize=address" "/INCREMENTAL:NO")
+            message(FATAL_ERROR "AddressSanitizer is not supported for MSVC.")
         else()
             target_compile_options(ciallo-test PRIVATE "-fsanitize=address" "-fno-omit-frame-pointer")
             target_link_options(ciallo-test PRIVATE "-fsanitize=address")
