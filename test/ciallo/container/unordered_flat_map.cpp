@@ -2392,10 +2392,19 @@ TEST(unordered_flat_map, heterogeneous_lookup_with_transparent_hash) {
 }
 
 TEST(unordered_flat_map, heterogeneous_lookup_requires_transparent_hasher) {
-    using opaque_map = unordered_flat_map<std::string, int>;
+    using default_map = unordered_flat_map<std::string, int>;
+    using opaque_map  = unordered_flat_map<std::string, int, std::hash<std::string>>;
     using transparent_map =
         unordered_flat_map<tracked_text, int, transparent_text_hash, transparent_text_equal>;
 
+    static_assert(can_find<default_map, std::string_view>);
+    static_assert(can_count<default_map, std::string_view>);
+    static_assert(can_contains<default_map, std::string_view>);
+    static_assert(can_at<default_map, std::string_view>);
+    static_assert(can_subscript<default_map, std::string_view>);
+    static_assert(can_insert<default_map, std::pair<std::string_view, int>>);
+    static_assert(can_insert_or_assign<default_map, std::string_view, int>);
+    static_assert(can_try_emplace<default_map, std::string_view, int>);
     static_assert(!can_find<opaque_map, std::string_view>);
     static_assert(!can_count<opaque_map, std::string_view>);
     static_assert(!can_contains<opaque_map, std::string_view>);
@@ -4129,12 +4138,14 @@ TEST(unordered_flat_map, emplace_requires_constructible) {
 }
 
 TEST(unordered_flat_map, insert_transparent_requires_constraint) {
-    using opaque_map = unordered_flat_map<std::string, int>;
+    using default_map = unordered_flat_map<std::string, int>;
+    using opaque_map  = unordered_flat_map<std::string, int, std::hash<std::string>>;
     using transparent_map =
         unordered_flat_map<tracked_text, int, transparent_text_hash, transparent_text_equal>;
 
-    static_assert(!can_insert<opaque_map, std::pair<std::string_view, int>>);
+    static_assert(can_insert<default_map, std::pair<std::string_view, int>>);
     static_assert(can_insert<transparent_map, std::pair<std::string_view, int>>);
+    static_assert(!can_insert<opaque_map, std::pair<std::string_view, int>>);
     static_assert(!can_insert<opaque_map, int>);
 }
 
