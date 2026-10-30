@@ -2,10 +2,10 @@
 
 #include "ciallo/container/compressed_pair.hpp"
 #include "ciallo/container/detail/swiss_table.hpp"
+#include "ciallo/container/hash.hpp"
 #include "ciallo/utility/scope_guard.hpp"
 
 #include <cstring>
-#include <functional>
 #include <stdexcept>
 #include <utility>
 
@@ -14,7 +14,7 @@ namespace ciallo {
 /// @brief
 ///   Hash set that stores elements using sequence-probing hash table.
 template <typename Key,
-          typename Hash      = std::hash<Key>,
+          typename Hash      = hash<Key>,
           typename KeyEqual  = std::equal_to<>,
           typename Allocator = std::allocator<Key>>
 class unordered_flat_set {

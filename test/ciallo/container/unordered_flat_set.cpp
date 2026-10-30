@@ -2141,10 +2141,14 @@ TEST(unordered_flat_set, heterogeneous_lookup_with_transparent_hash) {
 }
 
 TEST(unordered_flat_set, heterogeneous_lookup_requires_transparent_hasher) {
-    using opaque_set = unordered_flat_set<std::string>;
+    using default_set = unordered_flat_set<std::string>;
+    using opaque_set  = unordered_flat_set<std::string, std::hash<std::string>>;
     using transparent_set =
         unordered_flat_set<tracked_text, transparent_text_hash, transparent_text_equal>;
 
+    static_assert(can_find<default_set, std::string_view>);
+    static_assert(can_count<default_set, std::string_view>);
+    static_assert(can_contains<default_set, std::string_view>);
     static_assert(!can_find<opaque_set, std::string_view>);
     static_assert(!can_count<opaque_set, std::string_view>);
     static_assert(!can_contains<opaque_set, std::string_view>);
@@ -3702,12 +3706,14 @@ TEST(unordered_flat_set, emplace_requires_constructible) {
 }
 
 TEST(unordered_flat_set, insert_transparent_requires_constraint) {
-    using opaque_set = unordered_flat_set<std::string>;
+    using default_set = unordered_flat_set<std::string>;
+    using opaque_set  = unordered_flat_set<std::string, std::hash<std::string>>;
     using transparent_set =
         unordered_flat_set<tracked_text, transparent_text_hash, transparent_text_equal>;
 
-    static_assert(!can_insert<opaque_set, std::string_view>);
+    static_assert(can_insert<default_set, std::string_view>);
     static_assert(can_insert<transparent_set, std::string_view>);
+    static_assert(!can_insert<opaque_set, std::string_view>);
     static_assert(!can_insert<opaque_set, int>);
 }
 
