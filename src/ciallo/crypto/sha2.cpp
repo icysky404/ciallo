@@ -1,4 +1,4 @@
-#include "ciallo/crypto/sha256.hpp"
+#include "ciallo/crypto/sha2.hpp"
 
 #if defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||               \
     defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
@@ -34,6 +34,12 @@ static constexpr std::uint32_t sha256_round_constants[64] = {
 ///   Initial SHA256 hash value (FIPS 180-4, section 5.3.3).
 static constexpr std::uint32_t sha256_initial_state[8] = {
     0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
+};
+
+/// @brief
+///   Initial SHA224 hash value (FIPS 180-4, section 5.3.2).
+static constexpr std::uint32_t sha224_initial_state[8] = {
+    0xC1059ED8, 0x367CD507, 0x3070DD17, 0xF70E5939, 0xFFC00B31, 0x68581511, 0x64F98FA7, 0xBEFA4FA4,
 };
 
 /// @brief
@@ -349,12 +355,28 @@ using sha256_compress_fn = void (*)(std::uint32_t *, const std::uint8_t *, std::
 #endif
 }
 
-void ciallo::sha256(const void *data, std::size_t size, void *hash) noexcept {
+/// @brief
+///   Calculate SHA224 or SHA256 hash value.
+/// @param data
+///   Pointer to start of data to be hashed.
+/// @param size
+///   Size in byte of data to be hashed.
+/// @param hash
+///   Pointer to memory to store the hash result.
+/// @param initial_state
+///   Initial hash value of the algorithm.
+/// @param digest_size
+///   Size in byte of the hash result.
+static void sha256_hash_impl(const void *data,
+                             std::size_t size,
+                             void *hash,
+                             const std::uint32_t (&initial_state)[8],
+                             std::size_t digest_size) noexcept {
     static const sha256_compress_fn compress = select_sha256_compress();
 
     std::uint32_t state[8];
     for (std::size_t index = 0; index < 8; ++index) {
-        state[index] = sha256_initial_state[index];
+        state[index] = initial_state[index];
     }
 
     const auto *bytes             = static_cast<const std::uint8_t *>(data);
@@ -377,7 +399,242 @@ void ciallo::sha256(const void *data, std::size_t size, void *hash) noexcept {
     compress(state, tail, tail_size / sha256_block_size);
 
     auto *digest = static_cast<std::uint8_t *>(hash);
-    for (std::size_t index = 0; index < 8; ++index) {
+    for (std::size_t index = 0; index < digest_size / 4; ++index) {
         sha256_store_be32(digest + index * 4, state[index]);
     }
+}
+
+void ciallo::sha256(const void *data, std::size_t size, void *hash) noexcept {
+    sha256_hash_impl(data, size, hash, sha256_initial_state, 32);
+}
+
+void ciallo::sha224(const void *data, std::size_t size, void *hash) noexcept {
+    sha256_hash_impl(data, size, hash, sha224_initial_state, 28);
+}
+
+/// @brief
+///   Size in byte of one SHA512 message block.
+static constexpr std::size_t sha512_block_size = 128;
+
+/// @brief
+///   SHA512 round constants (FIPS 180-4, section 4.2.3).
+static constexpr std::uint64_t sha512_round_constants[80] = {
+    0x428A2F98D728AE22ULL, 0x7137449123EF65CDULL, 0xB5C0FBCFEC4D3B2FULL, 0xE9B5DBA58189DBBCULL,
+    0x3956C25BF348B538ULL, 0x59F111F1B605D019ULL, 0x923F82A4AF194F9BULL, 0xAB1C5ED5DA6D8118ULL,
+    0xD807AA98A3030242ULL, 0x12835B0145706FBEULL, 0x243185BE4EE4B28CULL, 0x550C7DC3D5FFB4E2ULL,
+    0x72BE5D74F27B896FULL, 0x80DEB1FE3B1696B1ULL, 0x9BDC06A725C71235ULL, 0xC19BF174CF692694ULL,
+    0xE49B69C19EF14AD2ULL, 0xEFBE4786384F25E3ULL, 0x0FC19DC68B8CD5B5ULL, 0x240CA1CC77AC9C65ULL,
+    0x2DE92C6F592B0275ULL, 0x4A7484AA6EA6E483ULL, 0x5CB0A9DCBD41FBD4ULL, 0x76F988DA831153B5ULL,
+    0x983E5152EE66DFABULL, 0xA831C66D2DB43210ULL, 0xB00327C898FB213FULL, 0xBF597FC7BEEF0EE4ULL,
+    0xC6E00BF33DA88FC2ULL, 0xD5A79147930AA725ULL, 0x06CA6351E003826FULL, 0x142929670A0E6E70ULL,
+    0x27B70A8546D22FFCULL, 0x2E1B21385C26C926ULL, 0x4D2C6DFC5AC42AEDULL, 0x53380D139D95B3DFULL,
+    0x650A73548BAF63DEULL, 0x766A0ABB3C77B2A8ULL, 0x81C2C92E47EDAEE6ULL, 0x92722C851482353BULL,
+    0xA2BFE8A14CF10364ULL, 0xA81A664BBC423001ULL, 0xC24B8B70D0F89791ULL, 0xC76C51A30654BE30ULL,
+    0xD192E819D6EF5218ULL, 0xD69906245565A910ULL, 0xF40E35855771202AULL, 0x106AA07032BBD1B8ULL,
+    0x19A4C116B8D2D0C8ULL, 0x1E376C085141AB53ULL, 0x2748774CDF8EEB99ULL, 0x34B0BCB5E19B48A8ULL,
+    0x391C0CB3C5C95A63ULL, 0x4ED8AA4AE3418ACBULL, 0x5B9CCA4F7763E373ULL, 0x682E6FF3D6B2B8A3ULL,
+    0x748F82EE5DEFB2FCULL, 0x78A5636F43172F60ULL, 0x84C87814A1F0AB72ULL, 0x8CC702081A6439ECULL,
+    0x90BEFFFA23631E28ULL, 0xA4506CEBDE82BDE9ULL, 0xBEF9A3F7B2C67915ULL, 0xC67178F2E372532BULL,
+    0xCA273ECEEA26619CULL, 0xD186B8C721C0C207ULL, 0xEADA7DD6CDE0EB1EULL, 0xF57D4F7FEE6ED178ULL,
+    0x06F067AA72176FBAULL, 0x0A637DC5A2C898A6ULL, 0x113F9804BEF90DAEULL, 0x1B710B35131C471BULL,
+    0x28DB77F523047D84ULL, 0x32CAAB7B40C72493ULL, 0x3C9EBE0A15C9BEBCULL, 0x431D67C49C100D4CULL,
+    0x4CC5D4BECB3E42B6ULL, 0x597F299CFC657E2AULL, 0x5FCB6FAB3AD6FAECULL, 0x6C44198C4A475817ULL,
+};
+
+/// @brief
+///   Initial SHA512 hash value (FIPS 180-4, section 5.3.5).
+static constexpr std::uint64_t sha512_initial_state[8] = {
+    0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL, 0x3C6EF372FE94F82BULL, 0xA54FF53A5F1D36F1ULL,
+    0x510E527FADE682D1ULL, 0x9B05688C2B3E6C1FULL, 0x1F83D9ABFB41BD6BULL, 0x5BE0CD19137E2179ULL,
+};
+
+/// @brief
+///   Initial SHA384 hash value (FIPS 180-4, section 5.3.4).
+static constexpr std::uint64_t sha384_initial_state[8] = {
+    0xCBBB9D5DC1059ED8ULL, 0x629A292A367CD507ULL, 0x9159015A3070DD17ULL, 0x152FECD8F70E5939ULL,
+    0x67332667FFC00B31ULL, 0x8EB44A8768581511ULL, 0xDB0C2E0D64F98FA7ULL, 0x47B5481DBEFA4FA4ULL,
+};
+
+/// @brief
+///   Load a 64-bit value in big-endian byte order.
+/// @param data
+///   Pointer to the first byte of the value.
+/// @return
+///   Value read from @p data.
+[[nodiscard]] static std::uint64_t sha512_load_be64(const std::uint8_t *data) noexcept {
+    return (static_cast<std::uint64_t>(data[0]) << 56) |
+           (static_cast<std::uint64_t>(data[1]) << 48) |
+           (static_cast<std::uint64_t>(data[2]) << 40) |
+           (static_cast<std::uint64_t>(data[3]) << 32) |
+           (static_cast<std::uint64_t>(data[4]) << 24) |
+           (static_cast<std::uint64_t>(data[5]) << 16) |
+           (static_cast<std::uint64_t>(data[6]) << 8) | static_cast<std::uint64_t>(data[7]);
+}
+
+/// @brief
+///   Store a 64-bit value in big-endian byte order.
+/// @param data
+///   Pointer to the destination.
+/// @param value
+///   Value to store.
+static void sha512_store_be64(std::uint8_t *data, std::uint64_t value) noexcept {
+    data[0] = static_cast<std::uint8_t>(value >> 56);
+    data[1] = static_cast<std::uint8_t>(value >> 48);
+    data[2] = static_cast<std::uint8_t>(value >> 40);
+    data[3] = static_cast<std::uint8_t>(value >> 32);
+    data[4] = static_cast<std::uint8_t>(value >> 24);
+    data[5] = static_cast<std::uint8_t>(value >> 16);
+    data[6] = static_cast<std::uint8_t>(value >> 8);
+    data[7] = static_cast<std::uint8_t>(value);
+}
+
+/// @brief
+///   SHA512 @c Ch function.
+[[nodiscard]] static std::uint64_t
+sha512_ch(std::uint64_t x, std::uint64_t y, std::uint64_t z) noexcept {
+    return (x & y) ^ (~x & z);
+}
+
+/// @brief
+///   SHA512 @c Maj function.
+[[nodiscard]] static std::uint64_t
+sha512_maj(std::uint64_t x, std::uint64_t y, std::uint64_t z) noexcept {
+    return (x & y) ^ (x & z) ^ (y & z);
+}
+
+/// @brief
+///   SHA512 upper-case sigma 0 function.
+[[nodiscard]] static std::uint64_t sha512_big_sigma0(std::uint64_t value) noexcept {
+    return std::rotr(value, 28) ^ std::rotr(value, 34) ^ std::rotr(value, 39);
+}
+
+/// @brief
+///   SHA512 upper-case sigma 1 function.
+[[nodiscard]] static std::uint64_t sha512_big_sigma1(std::uint64_t value) noexcept {
+    return std::rotr(value, 14) ^ std::rotr(value, 18) ^ std::rotr(value, 41);
+}
+
+/// @brief
+///   SHA512 lower-case sigma 0 function.
+[[nodiscard]] static std::uint64_t sha512_small_sigma0(std::uint64_t value) noexcept {
+    return std::rotr(value, 1) ^ std::rotr(value, 8) ^ (value >> 7);
+}
+
+/// @brief
+///   SHA512 lower-case sigma 1 function.
+[[nodiscard]] static std::uint64_t sha512_small_sigma1(std::uint64_t value) noexcept {
+    return std::rotr(value, 19) ^ std::rotr(value, 61) ^ (value >> 6);
+}
+
+/// @brief
+///   Portable SHA512 compression function for all architectures.
+/// @param state
+///   Current SHA512 state to update.
+/// @param data
+///   Pointer to start of the message blocks to be compressed.
+/// @param blocks
+///   Number of 128-byte message blocks to compress.
+static void
+sha512_compress(std::uint64_t state[8], const std::uint8_t *data, std::size_t blocks) noexcept {
+    for (; blocks != 0; --blocks, data += sha512_block_size) {
+        std::uint64_t words[80];
+        for (std::size_t index = 0; index < 16; ++index) {
+            words[index] = sha512_load_be64(data + index * 8);
+        }
+        for (std::size_t index = 16; index < 80; ++index) {
+            words[index] = words[index - 16] + sha512_small_sigma0(words[index - 15]) +
+                           words[index - 7] + sha512_small_sigma1(words[index - 2]);
+        }
+
+        std::uint64_t a = state[0];
+        std::uint64_t b = state[1];
+        std::uint64_t c = state[2];
+        std::uint64_t d = state[3];
+        std::uint64_t e = state[4];
+        std::uint64_t f = state[5];
+        std::uint64_t g = state[6];
+        std::uint64_t h = state[7];
+
+        for (std::size_t index = 0; index < 80; ++index) {
+            const std::uint64_t t1 = h + sha512_big_sigma1(e) + sha512_ch(e, f, g) +
+                                     sha512_round_constants[index] + words[index];
+            const std::uint64_t t2 = sha512_big_sigma0(a) + sha512_maj(a, b, c);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+
+        state[0] += a;
+        state[1] += b;
+        state[2] += c;
+        state[3] += d;
+        state[4] += e;
+        state[5] += f;
+        state[6] += g;
+        state[7] += h;
+    }
+}
+
+/// @brief
+///   Calculate SHA384 or SHA512 hash value.
+/// @param data
+///   Pointer to start of data to be hashed.
+/// @param size
+///   Size in byte of data to be hashed.
+/// @param hash
+///   Pointer to memory to store the hash result.
+/// @param initial_state
+///   Initial hash value of the algorithm.
+/// @param digest_size
+///   Size in byte of the hash result.
+static void sha512_hash_impl(const void *data,
+                             std::size_t size,
+                             void *hash,
+                             const std::uint64_t (&initial_state)[8],
+                             std::size_t digest_size) noexcept {
+    std::uint64_t state[8];
+    for (std::size_t index = 0; index < 8; ++index) {
+        state[index] = initial_state[index];
+    }
+
+    const auto *bytes             = static_cast<const std::uint8_t *>(data);
+    const std::size_t block_count = size / sha512_block_size;
+    if (block_count != 0) {
+        sha512_compress(state, bytes, block_count);
+    }
+
+    // Append the mandatory 0x80 byte and the zero padding.  One or two blocks are required
+    // depending on whether the 128-bit message length still fits in the current block.
+    const std::size_t remaining              = size % sha512_block_size;
+    std::uint8_t tail[2 * sha512_block_size] = {};
+    if (remaining != 0) {
+        std::memcpy(tail, bytes + block_count * sha512_block_size, remaining);
+    }
+    tail[remaining] = 0x80U;
+
+    const std::size_t tail_size = remaining < 112 ? sha512_block_size : 2 * sha512_block_size;
+    // The length field is 128-bit.  For size_t inputs below 2^61 bytes the high word is zero,
+    // but compute it anyway so that the full message-length range is handled correctly.
+    sha512_store_be64(tail + tail_size - 16, static_cast<std::uint64_t>(size) >> 61);
+    sha512_store_be64(tail + tail_size - 8, static_cast<std::uint64_t>(size) * 8);
+    sha512_compress(state, tail, tail_size / sha512_block_size);
+
+    auto *digest = static_cast<std::uint8_t *>(hash);
+    for (std::size_t index = 0; index < digest_size / 8; ++index) {
+        sha512_store_be64(digest + index * 8, state[index]);
+    }
+}
+
+void ciallo::sha512(const void *data, std::size_t size, void *hash) noexcept {
+    sha512_hash_impl(data, size, hash, sha512_initial_state, 64);
+}
+
+void ciallo::sha384(const void *data, std::size_t size, void *hash) noexcept {
+    sha512_hash_impl(data, size, hash, sha384_initial_state, 48);
 }

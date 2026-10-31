@@ -1,4 +1,4 @@
-#include "ciallo/crypto/sha256.hpp"
+#include "ciallo/crypto/sha2.hpp"
 
 #include <benchmark/benchmark.h>
 
