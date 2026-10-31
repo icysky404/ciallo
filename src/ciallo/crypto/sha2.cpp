@@ -8,10 +8,51 @@
 #    else
 #        include <cpuid.h>
 #    endif
+#elif (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        include <arm64_neon.h>
+#    else
+#        include <arm_neon.h>
+#    endif
+#    if defined(__linux__)
+#        include <sys/auxv.h>
+#        if __has_include(<asm/hwcap.h>)
+#            include <asm/hwcap.h>
+#        endif
+#        ifndef HWCAP_SHA2
+#            define HWCAP_SHA2 (1UL << 6)
+#        endif
+#        ifndef HWCAP_SHA512
+#            define HWCAP_SHA512 (1UL << 21)
+#        endif
+#    elif defined(__APPLE__)
+#        include <sys/sysctl.h>
+#    elif defined(_WIN32)
+#        ifndef WIN32_LEAN_AND_MEAN
+#            define WIN32_LEAN_AND_MEAN
+#        endif
+#        include <Windows.h>
+#    endif
 #endif
 
 #include <bit>
 #include <cstring>
+
+#if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+#    if defined(__APPLE__)
+/// @brief
+///   Query an optional CPU feature from the Apple ARM64 sysctl interface.
+/// @param name
+///   Name of the @c hw.optional sysctl entry to query.
+/// @return
+///   @c true if the feature is reported as available.
+[[nodiscard]] static bool arm64_has_feature(const char *name) noexcept {
+    int value        = 0;
+    std::size_t size = sizeof(value);
+    return sysctlbyname(name, &value, &size, nullptr, 0) == 0 && value != 0;
+}
+#    endif
+#endif
 
 /// @brief
 ///   Size in byte of one SHA256 message block.
@@ -310,6 +351,97 @@ CIALLO_SHA256_TARGET_SHA static void sha256_compress_shani(std::uint32_t state[8
         _mm_storeu_si128(reinterpret_cast<__m128i *>(&state[4]), state1);
     }
 }
+#elif (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        define CIALLO_SHA256_TARGET_SHA2
+#        define CIALLO_SHA256_INLINE_SHA2 __forceinline
+#    else
+#        define CIALLO_SHA256_TARGET_SHA2 __attribute__((target("arch=armv8-a+crypto")))
+#        define CIALLO_SHA256_INLINE_SHA2 __attribute__((always_inline)) inline
+#    endif
+
+/// @brief
+///   Perform four SHA256 rounds and update the message schedule for a later group.
+/// @param group
+///   Index of the four-round group, in the range [0, 15].
+/// @param state0
+///   State vector holding {A, B, C, D}.
+/// @param state1
+///   State vector holding {E, F, G, H}.
+/// @param words
+///   Message vectors carrying the current message schedule.
+CIALLO_SHA256_TARGET_SHA2 static CIALLO_SHA256_INLINE_SHA2 void
+sha256_round_group_sha2(std::size_t group,
+                        uint32x4_t &state0,
+                        uint32x4_t &state1,
+                        uint32x4_t (&words)[4]) noexcept {
+    const uint32x4_t message =
+        vaddq_u32(words[group & 3], vld1q_u32(&sha256_round_constants[group * 4]));
+    const uint32x4_t previous = state0;
+    state0                    = vsha256hq_u32(previous, state1, message);
+    state1                    = vsha256h2q_u32(state1, previous, message);
+
+    // Build the message schedule for the group four iterations ahead.  The @c sha256su0
+    // instruction accumulates the lower-case sigma 0 terms, and the @c sha256su1 instruction
+    // adds the lower-case sigma 1 terms.  The last four groups do not need another schedule.
+    if (group <= 11) {
+        uint32x4_t &next = words[group & 3];
+        next             = vsha256su1q_u32(vsha256su0q_u32(next, words[(group + 1) & 3]),
+                                           words[(group + 2) & 3], words[(group + 3) & 3]);
+    }
+}
+
+/// @brief
+///   SHA256 compression function with ARMv8 @c sha2 extensions.
+/// @param state
+///   Current SHA256 state to update.
+/// @param data
+///   Pointer to start of the message blocks to be compressed.
+/// @param blocks
+///   Number of 64-byte message blocks to compress.
+CIALLO_SHA256_TARGET_SHA2 static void sha256_compress_sha2(std::uint32_t state[8],
+                                                           const std::uint8_t *data,
+                                                           std::size_t blocks) noexcept {
+    uint32x4_t state0 = vld1q_u32(&state[0]);
+    uint32x4_t state1 = vld1q_u32(&state[4]);
+
+    for (; blocks != 0; --blocks, data += sha256_block_size) {
+        const uint32x4_t state0_save = state0;
+        const uint32x4_t state1_save = state1;
+
+        // The four message vectors also carry the partially computed message schedule.
+        uint32x4_t words[4];
+        words[0] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 0 * 16)));
+        words[1] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 1 * 16)));
+        words[2] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 2 * 16)));
+        words[3] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 3 * 16)));
+
+        // Unroll all sixteen groups so that the compiler keeps the schedule vectors in registers
+        // and folds the group-index conditions of sha256_round_group_sha2.
+        sha256_round_group_sha2(0, state0, state1, words);
+        sha256_round_group_sha2(1, state0, state1, words);
+        sha256_round_group_sha2(2, state0, state1, words);
+        sha256_round_group_sha2(3, state0, state1, words);
+        sha256_round_group_sha2(4, state0, state1, words);
+        sha256_round_group_sha2(5, state0, state1, words);
+        sha256_round_group_sha2(6, state0, state1, words);
+        sha256_round_group_sha2(7, state0, state1, words);
+        sha256_round_group_sha2(8, state0, state1, words);
+        sha256_round_group_sha2(9, state0, state1, words);
+        sha256_round_group_sha2(10, state0, state1, words);
+        sha256_round_group_sha2(11, state0, state1, words);
+        sha256_round_group_sha2(12, state0, state1, words);
+        sha256_round_group_sha2(13, state0, state1, words);
+        sha256_round_group_sha2(14, state0, state1, words);
+        sha256_round_group_sha2(15, state0, state1, words);
+
+        state0 = vaddq_u32(state0, state0_save);
+        state1 = vaddq_u32(state1, state1_save);
+    }
+
+    vst1q_u32(&state[0], state0);
+    vst1q_u32(&state[4], state1);
+}
 #endif
 
 /// @brief
@@ -350,6 +482,27 @@ using sha256_compress_fn = void (*)(std::uint32_t *, const std::uint8_t *, std::
     }
 
     return &sha256_compress_portable;
+#elif (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+    if constexpr (std::endian::native != std::endian::little) {
+        return &sha256_compress_portable;
+    } else {
+#    if defined(__linux__)
+        const unsigned long hwcap = getauxval(AT_HWCAP);
+        if ((hwcap & HWCAP_SHA2) != 0) {
+            return &sha256_compress_sha2;
+        }
+#    elif defined(__APPLE__)
+        // All Apple-designed ARM64 processors implement the crypto extensions.
+        return &sha256_compress_sha2;
+#    elif defined(_WIN32)
+#        if defined(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE)
+        if (IsProcessorFeaturePresent(PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE) != 0) {
+            return &sha256_compress_sha2;
+        }
+#        endif
+#    endif
+        return &sha256_compress_portable;
+    }
 #else
     return &sha256_compress_portable;
 #endif
@@ -534,8 +687,9 @@ sha512_maj(std::uint64_t x, std::uint64_t y, std::uint64_t z) noexcept {
 ///   Pointer to start of the message blocks to be compressed.
 /// @param blocks
 ///   Number of 128-byte message blocks to compress.
-static void
-sha512_compress(std::uint64_t state[8], const std::uint8_t *data, std::size_t blocks) noexcept {
+static void sha512_compress_portable(std::uint64_t state[8],
+                                     const std::uint8_t *data,
+                                     std::size_t blocks) noexcept {
     for (; blocks != 0; --blocks, data += sha512_block_size) {
         std::uint64_t words[80];
         for (std::size_t index = 0; index < 16; ++index) {
@@ -580,6 +734,215 @@ sha512_compress(std::uint64_t state[8], const std::uint8_t *data, std::size_t bl
         state[7] += h;
     }
 }
+#if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        define CIALLO_SHA512_TARGET_SHA512
+#        define CIALLO_SHA512_INLINE_SHA512 __forceinline
+#    else
+#        define CIALLO_SHA512_TARGET_SHA512 __attribute__((target("arch=armv8.2-a+sha3")))
+#        define CIALLO_SHA512_INLINE_SHA512 __attribute__((always_inline)) inline
+#    endif
+
+/// @brief
+///   Update one pair of SHA512 message schedule words.
+/// @param w16
+///   Message vector holding the words sixteen and fifteen positions back.
+/// @param w14
+///   Message vector holding the words fourteen and thirteen positions back.
+/// @param w8
+///   Message vector holding the words eight and seven positions back.
+/// @param w6
+///   Message vector holding the words six and five positions back.
+/// @param w2
+///   Message vector holding the words two and one positions back.
+/// @return
+///   Message vector holding the next two words of the schedule.
+[[nodiscard]] CIALLO_SHA512_TARGET_SHA512 static CIALLO_SHA512_INLINE_SHA512 uint64x2_t
+sha512_schedule_update(uint64x2_t w16,
+                       uint64x2_t w14,
+                       uint64x2_t w8,
+                       uint64x2_t w6,
+                       uint64x2_t w2) noexcept {
+    // The @c sha512su0 instruction accumulates the lower-case sigma 0 terms, and the @c sha512su1
+    // instruction adds the lower-case sigma 1 terms.  The words seven and six positions back
+    // straddle two vectors, so @c vextq_u64 assembles them into one vector.
+    return vsha512su1q_u64(vsha512su0q_u64(w16, w14), w2, vextq_u64(w8, w6, 1));
+}
+
+/// @brief
+///   Perform two SHA512 rounds and update the state vectors.
+/// @param round_index
+///   Index of the first round, in the range [0, 78].
+/// @param schedule
+///   Message vector holding the two message schedule words of the rounds.
+/// @param ab
+///   First state vector of the round pair.
+/// @param cd
+///   Second state vector of the round pair.
+/// @param ef
+///   Third state vector of the round pair.
+/// @param gh
+///   Fourth state vector of the round pair.
+CIALLO_SHA512_TARGET_SHA512 static CIALLO_SHA512_INLINE_SHA512 void
+sha512_round_pair(std::size_t round_index,
+                  uint64x2_t schedule,
+                  uint64x2_t &ab,
+                  uint64x2_t &cd,
+                  uint64x2_t &ef,
+                  uint64x2_t &gh) noexcept {
+    const uint64x2_t constants   = vld1q_u64(&sha512_round_constants[round_index]);
+    const uint64x2_t initial_sum = vaddq_u64(schedule, constants);
+
+    // The sha512h instruction expects the words of the first round in the high half of the
+    // vector, so swap the two halves of the round-constant and message sum before adding @p gh.
+    const uint64x2_t sum = vaddq_u64(vextq_u64(initial_sum, initial_sum, 1), gh);
+    const uint64x2_t de  = vextq_u64(cd, ef, 1);
+    const uint64x2_t fg  = vextq_u64(ef, gh, 1);
+
+    // The @c sha512h instruction computes the upper-case sigma 1 and @c Ch terms, while @c
+    // sha512h2 adds the upper-case sigma 0 and @c Maj terms.  The intermediate result is also
+    // added to the state vector holding {C, D}.
+    const uint64x2_t intermediate = vsha512hq_u64(sum, fg, de);
+    gh                            = vsha512h2q_u64(intermediate, cd, ab);
+    cd                            = vaddq_u64(cd, intermediate);
+}
+
+/// @brief
+///   Perform sixteen SHA512 rounds and update the message schedule for the next group.
+/// @param group
+///   Index of the sixteen-round group, in the range [0, 4].
+/// @param ab
+///   State vector holding {A, B}.
+/// @param cd
+///   State vector holding {C, D}.
+/// @param ef
+///   State vector holding {E, F}.
+/// @param gh
+///   State vector holding {G, H}.
+/// @param words
+///   Message vectors carrying the current message schedule.
+CIALLO_SHA512_TARGET_SHA512 static CIALLO_SHA512_INLINE_SHA512 void
+sha512_round_group(std::size_t group,
+                   uint64x2_t &ab,
+                   uint64x2_t &cd,
+                   uint64x2_t &ef,
+                   uint64x2_t &gh,
+                   uint64x2_t (&words)[8]) noexcept {
+    // Extend the message schedule to the next sixteen rounds.  The first group uses the words
+    // loaded directly from the message block, so it does not need an update.
+    if (group != 0) {
+        words[0] = sha512_schedule_update(words[0], words[1], words[4], words[5], words[7]);
+        words[1] = sha512_schedule_update(words[1], words[2], words[5], words[6], words[0]);
+        words[2] = sha512_schedule_update(words[2], words[3], words[6], words[7], words[1]);
+        words[3] = sha512_schedule_update(words[3], words[4], words[7], words[0], words[2]);
+        words[4] = sha512_schedule_update(words[4], words[5], words[0], words[1], words[3]);
+        words[5] = sha512_schedule_update(words[5], words[6], words[1], words[2], words[4]);
+        words[6] = sha512_schedule_update(words[6], words[7], words[2], words[3], words[5]);
+        words[7] = sha512_schedule_update(words[7], words[0], words[3], words[4], words[6]);
+    }
+
+    // Rotate the four state vectors through the round pairs, which keeps the {G, H} vector in
+    // the fourth parameter expected by sha512_round_pair.
+    const std::size_t round = group * 16;
+    sha512_round_pair(round + 0, words[0], ab, cd, ef, gh);
+    sha512_round_pair(round + 2, words[1], gh, ab, cd, ef);
+    sha512_round_pair(round + 4, words[2], ef, gh, ab, cd);
+    sha512_round_pair(round + 6, words[3], cd, ef, gh, ab);
+    sha512_round_pair(round + 8, words[4], ab, cd, ef, gh);
+    sha512_round_pair(round + 10, words[5], gh, ab, cd, ef);
+    sha512_round_pair(round + 12, words[6], ef, gh, ab, cd);
+    sha512_round_pair(round + 14, words[7], cd, ef, gh, ab);
+}
+
+/// @brief
+///   SHA512 compression function with ARMv8.2 @c sha512 extensions.
+/// @param state
+///   Current SHA512 state to update.
+/// @param data
+///   Pointer to start of the message blocks to be compressed.
+/// @param blocks
+///   Number of 128-byte message blocks to compress.
+CIALLO_SHA512_TARGET_SHA512 static void sha512_compress_sha512(std::uint64_t state[8],
+                                                               const std::uint8_t *data,
+                                                               std::size_t blocks) noexcept {
+    uint64x2_t ab = vld1q_u64(&state[0]);
+    uint64x2_t cd = vld1q_u64(&state[2]);
+    uint64x2_t ef = vld1q_u64(&state[4]);
+    uint64x2_t gh = vld1q_u64(&state[6]);
+
+    for (; blocks != 0; --blocks, data += sha512_block_size) {
+        const uint64x2_t ab_save = ab;
+        const uint64x2_t cd_save = cd;
+        const uint64x2_t ef_save = ef;
+        const uint64x2_t gh_save = gh;
+
+        // The eight message vectors also carry the partially computed message schedule.
+        uint64x2_t words[8];
+        words[0] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 0 * 16)));
+        words[1] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 1 * 16)));
+        words[2] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 2 * 16)));
+        words[3] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 3 * 16)));
+        words[4] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 4 * 16)));
+        words[5] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 5 * 16)));
+        words[6] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 6 * 16)));
+        words[7] = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(data + 7 * 16)));
+
+        // Unroll all five groups so that the compiler keeps the schedule vectors in registers
+        // and folds the group-index condition of sha512_round_group.
+        sha512_round_group(0, ab, cd, ef, gh, words);
+        sha512_round_group(1, ab, cd, ef, gh, words);
+        sha512_round_group(2, ab, cd, ef, gh, words);
+        sha512_round_group(3, ab, cd, ef, gh, words);
+        sha512_round_group(4, ab, cd, ef, gh, words);
+
+        ab = vaddq_u64(ab, ab_save);
+        cd = vaddq_u64(cd, cd_save);
+        ef = vaddq_u64(ef, ef_save);
+        gh = vaddq_u64(gh, gh_save);
+    }
+
+    vst1q_u64(&state[0], ab);
+    vst1q_u64(&state[2], cd);
+    vst1q_u64(&state[4], ef);
+    vst1q_u64(&state[6], gh);
+}
+#endif
+
+/// @brief
+///   SHA512 compression function pointer.
+using sha512_compress_fn = void (*)(std::uint64_t *, const std::uint8_t *, std::size_t);
+
+/// @brief
+///   Select SHA512 compression implementation according to current CPU features.
+/// @return
+///   SHA512 compression implementation that best suits current CPU.
+[[nodiscard]] static sha512_compress_fn select_sha512_compress() noexcept {
+#if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
+    if constexpr (std::endian::native != std::endian::little) {
+        return &sha512_compress_portable;
+    } else {
+#    if defined(__linux__)
+        const unsigned long hwcap = getauxval(AT_HWCAP);
+        if ((hwcap & HWCAP_SHA512) != 0) {
+            return &sha512_compress_sha512;
+        }
+#    elif defined(__APPLE__)
+        if (arm64_has_feature("hw.optional.armv8_2_sha512")) {
+            return &sha512_compress_sha512;
+        }
+#    elif defined(_WIN32)
+#        if defined(PF_ARM_SHA512_INSTRUCTIONS_AVAILABLE)
+        if (IsProcessorFeaturePresent(PF_ARM_SHA512_INSTRUCTIONS_AVAILABLE) != 0) {
+            return &sha512_compress_sha512;
+        }
+#        endif
+#    endif
+        return &sha512_compress_portable;
+    }
+#else
+    return &sha512_compress_portable;
+#endif
+}
 
 /// @brief
 ///   Calculate SHA384 or SHA512 hash value.
@@ -598,6 +961,8 @@ static void sha512_hash_impl(const void *data,
                              void *hash,
                              const std::uint64_t (&initial_state)[8],
                              std::size_t digest_size) noexcept {
+    static const sha512_compress_fn compress = select_sha512_compress();
+
     std::uint64_t state[8];
     for (std::size_t index = 0; index < 8; ++index) {
         state[index] = initial_state[index];
@@ -606,7 +971,7 @@ static void sha512_hash_impl(const void *data,
     const auto *bytes             = static_cast<const std::uint8_t *>(data);
     const std::size_t block_count = size / sha512_block_size;
     if (block_count != 0) {
-        sha512_compress(state, bytes, block_count);
+        compress(state, bytes, block_count);
     }
 
     // Append the mandatory 0x80 byte and the zero padding.  One or two blocks are required
@@ -623,7 +988,7 @@ static void sha512_hash_impl(const void *data,
     // but compute it anyway so that the full message-length range is handled correctly.
     sha512_store_be64(tail + tail_size - 16, static_cast<std::uint64_t>(size) >> 61);
     sha512_store_be64(tail + tail_size - 8, static_cast<std::uint64_t>(size) * 8);
-    sha512_compress(state, tail, tail_size / sha512_block_size);
+    compress(state, tail, tail_size / sha512_block_size);
 
     auto *digest = static_cast<std::uint8_t *>(hash);
     for (std::size_t index = 0; index < digest_size / 8; ++index) {
