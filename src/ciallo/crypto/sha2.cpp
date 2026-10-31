@@ -38,22 +38,6 @@
 #include <bit>
 #include <cstring>
 
-#if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
-#    if defined(__APPLE__)
-/// @brief
-///   Query an optional CPU feature from the Apple ARM64 sysctl interface.
-/// @param name
-///   Name of the @c hw.optional sysctl entry to query.
-/// @return
-///   @c true if the feature is reported as available.
-[[nodiscard]] static bool arm64_has_feature(const char *name) noexcept {
-    int value        = 0;
-    std::size_t size = sizeof(value);
-    return sysctlbyname(name, &value, &size, nullptr, 0) == 0 && value != 0;
-}
-#    endif
-#endif
-
 /// @brief
 ///   Size in byte of one SHA256 message block.
 static constexpr std::size_t sha256_block_size = 64;
@@ -927,7 +911,10 @@ using sha512_compress_fn = void (*)(std::uint64_t *, const std::uint8_t *, std::
             return &sha512_compress_sha512;
         }
 #    elif defined(__APPLE__)
-        if (arm64_has_feature("hw.optional.armv8_2_sha512")) {
+        int value        = 0;
+        std::size_t size = sizeof(value);
+        if (sysctlbyname("hw.optional.armv8_2_sha512", &value, &size, nullptr, 0) == 0 &&
+            value != 0) {
             return &sha512_compress_sha512;
         }
 #    elif defined(_WIN32)
