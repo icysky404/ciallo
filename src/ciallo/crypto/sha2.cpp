@@ -718,6 +718,330 @@ static void sha512_compress_portable(std::uint64_t state[8],
         state[7] += h;
     }
 }
+
+#if defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||               \
+    defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
+#    if defined(_MSC_VER)
+#        define CIALLO_SHA512_TARGET_AVX2
+#        define CIALLO_SHA512_INLINE_AVX2 __forceinline
+#    else
+#        define CIALLO_SHA512_TARGET_AVX2 __attribute__((target("avx2,bmi,bmi2")))
+#        define CIALLO_SHA512_INLINE_AVX2                                                          \
+            __attribute__((target("avx2,bmi,bmi2"), always_inline)) inline
+#    endif
+
+/// @brief
+///   Read extended control register 0 (XCR0), which reports the processor state components that
+///   the operating system has enabled.  AVX2 code must not run unless the XMM and YMM state are
+///   enabled.
+/// @return
+///   Current value of XCR0.
+[[nodiscard]] static std::uint64_t sha512_xgetbv0() noexcept {
+#    if defined(_MSC_VER)
+    return static_cast<std::uint64_t>(_xgetbv(0));
+#    else
+    std::uint32_t low  = 0;
+    std::uint32_t high = 0;
+    __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0U));
+    return (static_cast<std::uint64_t>(high) << 32) | low;
+#    endif
+}
+
+/// @brief
+///   Rotate two 64-bit lanes to the right by a compile-time amount.
+/// @tparam Amount
+///   Number of bits to rotate by, in the range [1, 63].
+/// @param value
+///   Vector to rotate.
+/// @return
+///   Rotated vector.
+template <int Amount>
+[[nodiscard]] static CIALLO_SHA512_INLINE_AVX2 __m256i
+sha512_rotate_right_epi64(__m256i value) noexcept {
+    static_assert(Amount > 0 && Amount < 64, "Invalid SHA512 rotation amount.");
+    return _mm256_or_si256(_mm256_srli_epi64(value, Amount), _mm256_slli_epi64(value, 64 - Amount));
+}
+
+/// @brief
+///   SHA512 lower-case sigma 0 on the message words of two blocks at once.
+/// @param value
+///   Vector holding one message word of both blocks.
+/// @return
+///   Vector holding the sigma 0 result of both blocks.
+[[nodiscard]] static CIALLO_SHA512_INLINE_AVX2 __m256i
+sha512_small_sigma0_epi64(__m256i value) noexcept {
+    return _mm256_xor_si256(
+        _mm256_xor_si256(sha512_rotate_right_epi64<1>(value), sha512_rotate_right_epi64<8>(value)),
+        _mm256_srli_epi64(value, 7));
+}
+
+/// @brief
+///   SHA512 lower-case sigma 1 on the message words of two blocks at once.
+/// @param value
+///   Vector holding one message word of both blocks.
+/// @return
+///   Vector holding the sigma 1 result of both blocks.
+[[nodiscard]] static CIALLO_SHA512_INLINE_AVX2 __m256i
+sha512_small_sigma1_epi64(__m256i value) noexcept {
+    return _mm256_xor_si256(_mm256_xor_si256(sha512_rotate_right_epi64<19>(value),
+                                             sha512_rotate_right_epi64<61>(value)),
+                            _mm256_srli_epi64(value, 6));
+}
+
+/// @brief
+///   Load the message words @p index and @p index + 1 of two message blocks into one vector.
+/// @param low
+///   Message schedule of the first block.
+/// @param high
+///   Message schedule of the second block.
+/// @param index
+///   Index of the first word to load.
+/// @return
+///   Vector whose low lane holds the words of @p low and high lane those of @p high .
+[[nodiscard]] static CIALLO_SHA512_INLINE_AVX2 __m256i
+sha512_load_schedule_pair(const std::uint64_t *low,
+                          const std::uint64_t *high,
+                          std::size_t index) noexcept {
+    const __m128i first  = _mm_loadu_si128(reinterpret_cast<const __m128i *>(low + index));
+    const __m128i second = _mm_loadu_si128(reinterpret_cast<const __m128i *>(high + index));
+    return _mm256_set_m128i(second, first);
+}
+
+/// @brief
+///   Store one pair of message schedule words to the schedules of two message blocks.
+/// @param low
+///   Message schedule of the first block.
+/// @param high
+///   Message schedule of the second block.
+/// @param index
+///   Index of the first word to store.
+/// @param value
+///   Vector whose low lane goes to @p low and high lane to @p high .
+static CIALLO_SHA512_INLINE_AVX2 void sha512_store_schedule_pair(std::uint64_t *low,
+                                                                 std::uint64_t *high,
+                                                                 std::size_t index,
+                                                                 __m256i value) noexcept {
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(low + index), _mm256_castsi256_si128(value));
+    _mm_storeu_si128(reinterpret_cast<__m128i *>(high + index), _mm256_extracti128_si256(value, 1));
+}
+
+/// @brief
+///   Extend the message schedule of two SHA512 blocks by one pair of words.
+/// @param words
+///   Message schedule of both blocks.
+/// @param index
+///   Index of the first word of the pair, in the range [16, 78].
+static CIALLO_SHA512_INLINE_AVX2 void sha512_schedule_step(std::uint64_t (&words)[2][80],
+                                                           std::size_t index) noexcept {
+    const __m256i w16   = sha512_load_schedule_pair(words[0], words[1], index - 16);
+    const __m256i w15   = sha512_load_schedule_pair(words[0], words[1], index - 15);
+    const __m256i w7    = sha512_load_schedule_pair(words[0], words[1], index - 7);
+    const __m256i w2    = sha512_load_schedule_pair(words[0], words[1], index - 2);
+    const __m256i value = _mm256_add_epi64(
+        _mm256_add_epi64(w16, w7),
+        _mm256_add_epi64(sha512_small_sigma0_epi64(w15), sha512_small_sigma1_epi64(w2)));
+    sha512_store_schedule_pair(words[0], words[1], index, value);
+}
+
+/// @brief
+///   Compute the message schedule of two SHA512 blocks at once.
+///
+///   Consecutive message blocks of one stream are chained through the hash state, so their round
+///   functions cannot run in parallel.  Their message schedules are independent, however: both are
+///   derived from the message alone.  Computing two schedules side by side fills all four 64-bit
+///   lanes of an AVX2 vector.
+/// @param words
+///   Message schedule of both blocks, @c words[0] for the first block and @c words[1] for the
+///   second one.  The first sixteen words of each row must already be loaded.
+static CIALLO_SHA512_INLINE_AVX2 void
+sha512_schedule_pair_blocks(std::uint64_t (&words)[2][80]) noexcept {
+    for (std::size_t index = 16; index < 80; index += 2) {
+        sha512_schedule_step(words, index);
+    }
+}
+
+/// @brief
+///   Load the first sixteen words of two SHA512 blocks in big-endian byte order.
+/// @param data
+///   Pointer to the start of the first block; the second block follows it immediately.
+/// @param words
+///   Message schedule of both blocks to fill.
+static CIALLO_SHA512_INLINE_AVX2 void
+sha512_load_pair_blocks(const std::uint8_t *data, std::uint64_t (&words)[2][80]) noexcept {
+    const __m256i byte_swap =
+        _mm256_setr_epi8(7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
+                         0, 15, 14, 13, 12, 11, 10, 9, 8);
+
+    for (std::size_t group = 0; group < 4; ++group) {
+        const __m256i first = _mm256_shuffle_epi8(
+            _mm256_loadu_si256(reinterpret_cast<const __m256i *>(data + group * 32)), byte_swap);
+        const __m256i second =
+            _mm256_shuffle_epi8(_mm256_loadu_si256(reinterpret_cast<const __m256i *>(
+                                    data + sha512_block_size + group * 32)),
+                                byte_swap);
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(&words[0][group * 4]), first);
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(&words[1][group * 4]), second);
+    }
+}
+
+/// @brief
+///   Perform one SHA512 round on a scalar state.
+/// @param a
+///   State word A of the round.
+/// @param b
+///   State word B of the round.
+/// @param c
+///   State word C of the round.
+/// @param d
+///   State word D of the round.
+/// @param e
+///   State word E of the round.
+/// @param f
+///   State word F of the round.
+/// @param g
+///   State word G of the round.
+/// @param h
+///   State word H of the round.
+/// @param word
+///   Message schedule word of the round.
+/// @param constant
+///   Round constant of the round.
+static CIALLO_SHA512_INLINE_AVX2 void sha512_round(std::uint64_t &a,
+                                                   std::uint64_t &b,
+                                                   std::uint64_t &c,
+                                                   std::uint64_t &d,
+                                                   std::uint64_t &e,
+                                                   std::uint64_t &f,
+                                                   std::uint64_t &g,
+                                                   std::uint64_t &h,
+                                                   std::uint64_t word,
+                                                   std::uint64_t constant) noexcept {
+    const std::uint64_t t1 = h + sha512_big_sigma1(e) + sha512_ch(e, f, g) + constant + word;
+    const std::uint64_t t2 = sha512_big_sigma0(a) + sha512_maj(a, b, c);
+
+    h = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = c;
+    c = b;
+    b = a;
+    a = t1 + t2;
+}
+
+/// @brief
+///   Run the eighty SHA512 rounds of one block.
+///
+///   The rounds are unrolled eight at a time.  When @p next is not null, two pairs of message
+///   schedule words of the next block pair are computed after every group of eight rounds: the
+///   message schedule is latency bound while the round chain is throughput bound, so the two
+///   interleave well and the schedule cost almost disappears.
+/// @param state
+///   Hash state to update in place.
+/// @param words
+///   Message schedule of the block.
+/// @param next
+///   Message schedule of the next block pair to extend, or null when there is no next pair.
+/// @param next_index
+///   Index of the next message schedule pair to compute.  Advanced by this function.
+static CIALLO_SHA512_INLINE_AVX2 void sha512_compress_rounds(std::uint64_t state[8],
+                                                             const std::uint64_t *words,
+                                                             std::uint64_t (*next)[2][80],
+                                                             std::size_t &next_index) noexcept {
+    std::uint64_t a = state[0];
+    std::uint64_t b = state[1];
+    std::uint64_t c = state[2];
+    std::uint64_t d = state[3];
+    std::uint64_t e = state[4];
+    std::uint64_t f = state[5];
+    std::uint64_t g = state[6];
+    std::uint64_t h = state[7];
+
+    for (std::size_t index = 0; index < 80; index += 8) {
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 0], sha512_round_constants[index + 0]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 1], sha512_round_constants[index + 1]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 2], sha512_round_constants[index + 2]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 3], sha512_round_constants[index + 3]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 4], sha512_round_constants[index + 4]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 5], sha512_round_constants[index + 5]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 6], sha512_round_constants[index + 6]);
+        sha512_round(a, b, c, d, e, f, g, h, words[index + 7], sha512_round_constants[index + 7]);
+
+        if (next != nullptr && next_index < 80) {
+            sha512_schedule_step(*next, next_index);
+            sha512_schedule_step(*next, next_index + 2);
+            next_index += 4;
+        }
+    }
+
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    state[5] += f;
+    state[6] += g;
+    state[7] += h;
+}
+
+/// @brief
+///   SHA512 compression function with AVX2 instructions.
+///
+///   The round function of one block is a single dependency chain and stays scalar.  The message
+///   schedule is vectorized for two blocks at once and the schedule of the next block pair is
+///   computed while the rounds of the current pair run.  The last block of an odd count is
+///   handled by the portable implementation.
+/// @param state
+///   Current SHA512 state to update.
+/// @param data
+///   Pointer to start of the message blocks to be compressed.
+/// @param blocks
+///   Number of 128-byte message blocks to compress.
+CIALLO_SHA512_TARGET_AVX2 static void sha512_compress_avx2(std::uint64_t state[8],
+                                                           const std::uint8_t *data,
+                                                           std::size_t blocks) noexcept {
+    if (blocks < 2) {
+        sha512_compress_portable(state, data, blocks);
+        return;
+    }
+
+    // Two schedule buffers alternate: while the rounds of one pair of blocks run, the schedule of
+    // the next pair is computed into the other buffer.
+    std::uint64_t first[2][80];
+    std::uint64_t second[2][80];
+    std::uint64_t (*current)[2][80] = &first;
+    std::uint64_t (*next)[2][80]    = &second;
+
+    sha512_load_pair_blocks(data, *current);
+    sha512_schedule_pair_blocks(*current);
+    data += 2 * sha512_block_size;
+    blocks -= 2;
+
+    while (blocks >= 2) {
+        sha512_load_pair_blocks(data, *next);
+
+        std::size_t next_index = 16;
+        sha512_compress_rounds(state, (*current)[0], next, next_index);
+        sha512_compress_rounds(state, (*current)[1], next, next_index);
+
+        std::uint64_t (*swap)[2][80] = current;
+        current                      = next;
+        next                         = swap;
+
+        data += 2 * sha512_block_size;
+        blocks -= 2;
+    }
+
+    std::size_t unused_index = 80;
+    sha512_compress_rounds(state, (*current)[0], nullptr, unused_index);
+    sha512_compress_rounds(state, (*current)[1], nullptr, unused_index);
+
+    if (blocks != 0) {
+        sha512_compress_portable(state, data, blocks);
+    }
+}
+#endif
+
 #if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && !defined(_M_ARM64EC)
 #    if defined(_MSC_VER) && !defined(__clang__)
 #        define CIALLO_SHA512_TARGET_SHA512
@@ -926,6 +1250,40 @@ using sha512_compress_fn = void (*)(std::uint64_t *, const std::uint8_t *, std::
 #    endif
         return &sha512_compress_portable;
     }
+#elif defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||             \
+    defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
+    std::uint32_t eax = 0;
+    std::uint32_t ebx = 0;
+    std::uint32_t ecx = 0;
+    std::uint32_t edx = 0;
+
+    // AVX2 is only usable when the processor implements it and the operating system has enabled
+    // the XMM and YMM state, which XCR0 reports.
+    cpuid(0, 0, eax, ebx, ecx, edx);
+    if (eax < 7) {
+        return &sha512_compress_portable;
+    }
+
+    cpuid(1, 0, eax, ebx, ecx, edx);
+    bool avx = (ecx & (1U << 28)) != 0;
+    if ((ecx & (1U << 27)) != 0) {
+        constexpr std::uint64_t avx_state_mask = (1U << 1) | (1U << 2);
+        avx = avx && (sha512_xgetbv0() & avx_state_mask) == avx_state_mask;
+    } else {
+        avx = false;
+    }
+    if (!avx) {
+        return &sha512_compress_portable;
+    }
+
+    cpuid(7, 0, eax, ebx, ecx, edx);
+    // Every x86 processor that implements AVX2 also implements BMI2, which the scalar round
+    // function uses to rotate without an extra move.  Check both bits anyway.
+    constexpr std::uint32_t avx2_and_bmi2 = (1U << 5) | (1U << 8);
+    if ((ebx & avx2_and_bmi2) == avx2_and_bmi2) {
+        return &sha512_compress_avx2;
+    }
+    return &sha512_compress_portable;
 #else
     return &sha512_compress_portable;
 #endif
