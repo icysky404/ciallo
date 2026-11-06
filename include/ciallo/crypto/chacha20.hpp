@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ranges>
 #include <stdexcept>
 #include <type_traits>
@@ -123,5 +124,88 @@ Range chacha20(const void *data,
              std::ranges::data(result));
     return result;
 }
+
+/// @brief
+///   C++11-style ChaCha20 random generator. This random generator could be used as cryptographic
+///   random generator.
+class CIALLO_API chacha20_random {
+public:
+    using result_type = std::uint32_t;
+
+    /// @brief
+    ///   Create this ChaCha20 random stream generator.
+    chacha20_random() noexcept;
+
+    /// @brief
+    ///   @c chacha20_random is trivially copyable.
+    /// @param other
+    ///   The @c chacha20_random generator to be copied from.
+    chacha20_random(const chacha20_random &other) noexcept = default;
+
+    /// @brief
+    ///   @c chacha20_random is trivially movable.
+    /// @param other
+    ///   The @c chacha20_random generator to be moved from. This constructor is exactly the same as
+    ///   copy constructor.
+    chacha20_random(chacha20_random &&other) noexcept = default;
+
+    /// @brief
+    ///   @c chacha20_random is trivially destructible.
+    ~chacha20_random() = default;
+
+    /// @brief
+    ///   @c chacha20_random is trivially copyable.
+    /// @param other
+    ///   The @c chacha20_random generator to be copied from.
+    /// @return
+    ///   Reference to this @c chacha20_random object.
+    chacha20_random &operator=(const chacha20_random &other) noexcept = default;
+
+    /// @brief
+    ///   @c chacha20_random is trivially movable.
+    /// @param other
+    ///   The @c chacha20_random generator to be moved from. This function is exactly the same as
+    ///   copy assignment.
+    /// @return
+    ///   Reference to this @c chacha20_random object.
+    chacha20_random &operator=(chacha20_random &&other) noexcept = default;
+
+    /// @brief
+    ///   Get the minimum value that this random generator could generate.
+    /// @return
+    ///   Minimum value that this random generator could generate.
+    static constexpr result_type min() noexcept {
+        return (std::numeric_limits<result_type>::min)();
+    }
+
+    /// @brief
+    ///   Get the maximum value that this random generator could generate.
+    /// @return
+    ///   Maximum value that this random generator could generate.
+    static constexpr result_type max() noexcept {
+        return (std::numeric_limits<result_type>::max)();
+    }
+
+    /// @brief
+    ///   Generate a random value. This method is not concurrent safe.
+    /// @return
+    ///   New random value from this ChaCha20 random stream.
+    [[nodiscard]] result_type operator()() noexcept;
+
+    /// @brief
+    ///   Fill the given buffer with ChaCha20 random stream.
+    /// @param[out] buffer
+    ///   Pointer to start of the buffer to be filled.
+    /// @param size
+    ///   Size in byte of @p buffer to be filled.
+    void operator()(void *buffer, std::size_t size) noexcept;
+
+private:
+    std::byte m_key[32];
+    std::byte m_nonce[12];
+    result_type m_buffer[16];
+    std::size_t m_position;
+    std::size_t m_rounds;
+};
 
 } // namespace ciallo

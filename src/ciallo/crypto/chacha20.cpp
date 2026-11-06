@@ -1,6 +1,18 @@
 #include "ciallo/crypto/chacha20.hpp"
 
-#if defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||             \
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    include <Windows.h>
+#    include <bcrypt.h>
+#else
+#    include <cstdlib>
+#    include <sys/random.h>
+#    include <unistd.h>
+#endif
+
+#if defined(_M_IX86) || defined(_M_X64) || defined(_M_ARM64EC) || defined(__i386) ||               \
     defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
 #    include <immintrin.h>
 #    if defined(_MSC_VER)
@@ -18,7 +30,9 @@
 #    define CIALLO_CHACHA20_ARM 1
 #endif
 
+#include <algorithm>
 #include <bit>
+#include <cstring>
 
 /// @brief
 ///   Size in byte of one ChaCha20 keystream block.
@@ -1137,4 +1151,78 @@ std::size_t ciallo::chacha20(const void *data,
     process(static_cast<const std::uint8_t *>(data), size, state,
             static_cast<std::uint8_t *>(output));
     return size;
+}
+
+/// @brief
+///   For internal usage. Acquire random bytes from system entropy.
+/// @param[out] buffer
+///   Pointer to start of buffer to store random bytes.
+/// @param size
+///   Size in byte of the buffer.
+static void random_bytes(void *buffer, std::size_t size) noexcept {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // TODO: implement for Windows.
+#else
+    int result = ::getentropy(buffer, size);
+    if (result >= 0) [[likely]] {
+        return;
+    }
+    arc4random_buf(buffer, size);
+#endif
+}
+
+ciallo::chacha20_random::chacha20_random() noexcept : m_buffer(), m_position(0), m_rounds(0) {
+    random_bytes(m_key, sizeof(m_key));
+    random_bytes(m_nonce, sizeof(m_nonce));
+}
+
+ciallo::chacha20_random::result_type ciallo::chacha20_random::operator()() noexcept {
+    std::size_t index = m_position++ % 16;
+    if (index == 0) {
+        if (m_rounds >= 32768) [[unlikely]] {
+            random_bytes(m_key, sizeof(m_key));
+            random_bytes(m_nonce, sizeof(m_nonce));
+            m_position = 0;
+            m_rounds   = 0;
+        }
+        std::ranges::fill(m_buffer, 0);
+        chacha20(m_buffer, sizeof(m_buffer), m_key, m_nonce, m_rounds++, m_buffer);
+    }
+    return m_buffer[index];
+}
+
+void ciallo::chacha20_random::operator()(void *buffer, std::size_t size) noexcept {
+    auto *output = static_cast<std::byte *>(buffer);
+
+    // Drain the remainder of the block currently held in the word buffer, so that the byte stream
+    // continues exactly where the words returned by operator()() stopped.
+    if (const std::size_t consumed = (m_position % 16) * sizeof(result_type);
+        consumed != 0 && size != 0) {
+        const std::size_t count = (std::min)(size, sizeof(m_buffer) - consumed);
+        std::memcpy(output, reinterpret_cast<const std::byte *>(m_buffer) + consumed, count);
+        // Positions are tracked in whole words: a request ending in the middle of a word simply
+        // discards the unused bytes of that word, which is harmless for a keystream.
+        m_position += (count + sizeof(result_type) - 1) / sizeof(result_type);
+        output += count;
+        size -= count;
+    }
+
+    // Generate the remaining full blocks. They are produced into the word buffer (which doubles as
+    // the zeroed input required for a pure keystream) and then copied to the destination.
+    while (size != 0) {
+        if (m_rounds >= 32768) [[unlikely]] {
+            random_bytes(m_key, sizeof(m_key));
+            random_bytes(m_nonce, sizeof(m_nonce));
+            m_position = 0;
+            m_rounds   = 0;
+        }
+        std::ranges::fill(m_buffer, 0);
+        chacha20(m_buffer, sizeof(m_buffer), m_key, m_nonce, m_rounds++, m_buffer);
+
+        const std::size_t count = (std::min)(size, sizeof(m_buffer));
+        std::memcpy(output, m_buffer, count);
+        m_position += (count + sizeof(result_type) - 1) / sizeof(result_type);
+        output += count;
+        size -= count;
+    }
 }
