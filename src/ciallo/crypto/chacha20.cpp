@@ -1172,57 +1172,89 @@ static void random_bytes(void *buffer, std::size_t size) noexcept {
 }
 
 ciallo::chacha20_random::chacha20_random() noexcept : m_buffer(), m_position(0), m_rounds(0) {
-    random_bytes(m_key, sizeof(m_key));
-    random_bytes(m_nonce, sizeof(m_nonce));
+    random_bytes(m_key.data(), sizeof(m_key));
+    random_bytes(m_nonce.data(), sizeof(m_nonce));
+}
+
+ciallo::chacha20_random::chacha20_random(chacha20_random &&other) noexcept
+    : m_key(other.m_key),
+      m_nonce(other.m_nonce),
+      m_buffer(other.m_buffer),
+      m_position(other.m_position),
+      m_rounds(other.m_rounds) {
+    random_bytes(other.m_key.data(), sizeof(other.m_key));
+    random_bytes(other.m_nonce.data(), sizeof(other.m_nonce));
+    std::ranges::fill(other.m_buffer, 0);
+    other.m_position = 0;
+    other.m_rounds   = 0;
+}
+
+ciallo::chacha20_random::~chacha20_random() {
+    std::ranges::fill(m_key, std::byte());
+    std::ranges::fill(m_nonce, std::byte());
+}
+
+ciallo::chacha20_random &ciallo::chacha20_random::operator=(chacha20_random &&other) noexcept {
+    if (this == &other) [[unlikely]] {
+        return *this;
+    }
+
+    m_key      = other.m_key;
+    m_nonce    = other.m_nonce;
+    m_buffer   = other.m_buffer;
+    m_position = other.m_position;
+    m_rounds   = other.m_rounds;
+
+    random_bytes(other.m_key.data(), sizeof(other.m_key));
+    random_bytes(other.m_nonce.data(), sizeof(other.m_nonce));
+    std::ranges::fill(other.m_buffer, 0);
+    other.m_position = 0;
+    other.m_rounds   = 0;
+
+    return *this;
 }
 
 ciallo::chacha20_random::result_type ciallo::chacha20_random::operator()() noexcept {
-    std::size_t index = m_position++ % 16;
+    std::uint32_t index = m_position++ % m_buffer.size();
     if (index == 0) {
         if (m_rounds >= 32768) [[unlikely]] {
-            random_bytes(m_key, sizeof(m_key));
-            random_bytes(m_nonce, sizeof(m_nonce));
+            random_bytes(m_key.data(), sizeof(m_key));
+            random_bytes(m_nonce.data(), sizeof(m_nonce));
             m_position = 0;
             m_rounds   = 0;
         }
         std::ranges::fill(m_buffer, 0);
-        chacha20(m_buffer, sizeof(m_buffer), m_key, m_nonce, m_rounds++, m_buffer);
+        chacha20(m_buffer.data(), sizeof(m_buffer), m_key.data(), m_nonce.data(), m_rounds++,
+                 m_buffer.data());
     }
     return m_buffer[index];
 }
 
 void ciallo::chacha20_random::operator()(void *buffer, std::size_t size) noexcept {
-    auto *output = static_cast<std::byte *>(buffer);
-
-    // Drain the remainder of the block currently held in the word buffer, so that the byte stream
-    // continues exactly where the words returned by operator()() stopped.
-    if (const std::size_t consumed = (m_position % 16) * sizeof(result_type);
-        consumed != 0 && size != 0) {
-        const std::size_t count = (std::min)(size, sizeof(m_buffer) - consumed);
-        std::memcpy(output, reinterpret_cast<const std::byte *>(m_buffer) + consumed, count);
-        // Positions are tracked in whole words: a request ending in the middle of a word simply
-        // discards the unused bytes of that word, which is harmless for a keystream.
-        m_position += (count + sizeof(result_type) - 1) / sizeof(result_type);
-        output += count;
-        size -= count;
+    if (size == 0) [[unlikely]] {
+        return;
     }
 
-    // Generate the remaining full blocks. They are produced into the word buffer (which doubles as
-    // the zeroed input required for a pure keystream) and then copied to the destination.
-    while (size != 0) {
-        if (m_rounds >= 32768) [[unlikely]] {
-            random_bytes(m_key, sizeof(m_key));
-            random_bytes(m_nonce, sizeof(m_nonce));
+    std::memset(buffer, 0, size);
+    std::byte *position    = static_cast<std::byte *>(buffer);
+    std::size_t new_rounds = (size + sizeof(m_buffer) - 1) / sizeof(m_buffer);
+
+    while (new_rounds > 0) {
+        std::uint32_t max_blocks = (std::numeric_limits<std::uint32_t>::max)() - m_rounds;
+        std::size_t blocks       = std::min<std::size_t>(new_rounds, max_blocks);
+        std::size_t random_size  = std::min(blocks * sizeof(m_buffer), size);
+        chacha20(position, random_size, m_key.data(), m_nonce.data(), m_rounds, position);
+
+        new_rounds -= blocks;
+        m_rounds += blocks;
+        position += random_size;
+        size -= random_size;
+
+        if (m_rounds >= 32768) {
+            random_bytes(m_key.data(), sizeof(m_key));
+            random_bytes(m_nonce.data(), sizeof(m_nonce));
             m_position = 0;
             m_rounds   = 0;
         }
-        std::ranges::fill(m_buffer, 0);
-        chacha20(m_buffer, sizeof(m_buffer), m_key, m_nonce, m_rounds++, m_buffer);
-
-        const std::size_t count = (std::min)(size, sizeof(m_buffer));
-        std::memcpy(output, m_buffer, count);
-        m_position += (count + sizeof(result_type) - 1) / sizeof(result_type);
-        output += count;
-        size -= count;
     }
 }

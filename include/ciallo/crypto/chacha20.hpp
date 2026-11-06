@@ -2,6 +2,7 @@
 
 #include "ciallo/configuration.hpp"
 
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -137,38 +138,32 @@ public:
     chacha20_random() noexcept;
 
     /// @brief
-    ///   @c chacha20_random is trivially copyable.
-    /// @param other
-    ///   The @c chacha20_random generator to be copied from.
-    chacha20_random(const chacha20_random &other) noexcept = default;
+    ///   @c chacha20_random is not copyable.
+    chacha20_random(const chacha20_random &other) noexcept = delete;
 
     /// @brief
-    ///   @c chacha20_random is trivially movable.
+    ///   Move constructor for @c chacha20_random .
     /// @param other
-    ///   The @c chacha20_random generator to be moved from. This constructor is exactly the same as
-    ///   copy constructor.
-    chacha20_random(chacha20_random &&other) noexcept = default;
+    ///   The @c chacha20_random generator to be moved from. The moved @c chacha20_random object
+    ///   will be reinitialized.
+    chacha20_random(chacha20_random &&other) noexcept;
 
     /// @brief
-    ///   @c chacha20_random is trivially destructible.
-    ~chacha20_random() = default;
+    ///   Destroy this @c chacha20_random generator.
+    ~chacha20_random();
 
     /// @brief
-    ///   @c chacha20_random is trivially copyable.
+    ///   @c chacha20_random is not copyable.
+    chacha20_random &operator=(const chacha20_random &other) = delete;
+
+    /// @brief
+    ///   Move assignment for @c chacha20_random .
     /// @param other
-    ///   The @c chacha20_random generator to be copied from.
+    ///   The @c chacha20_random generator to be moved from. The moved @c chacha20_random object
+    ///   will be reinitialized.
     /// @return
     ///   Reference to this @c chacha20_random object.
-    chacha20_random &operator=(const chacha20_random &other) noexcept = default;
-
-    /// @brief
-    ///   @c chacha20_random is trivially movable.
-    /// @param other
-    ///   The @c chacha20_random generator to be moved from. This function is exactly the same as
-    ///   copy assignment.
-    /// @return
-    ///   Reference to this @c chacha20_random object.
-    chacha20_random &operator=(chacha20_random &&other) noexcept = default;
+    chacha20_random &operator=(chacha20_random &&other) noexcept;
 
     /// @brief
     ///   Get the minimum value that this random generator could generate.
@@ -201,11 +196,11 @@ public:
     void operator()(void *buffer, std::size_t size) noexcept;
 
 private:
-    std::byte m_key[32];
-    std::byte m_nonce[12];
-    result_type m_buffer[16];
-    std::size_t m_position;
-    std::size_t m_rounds;
+    std::array<std::byte, 32> m_key;
+    std::array<std::byte, 12> m_nonce;
+    std::array<result_type, 16> m_buffer;
+    std::uint32_t m_position;
+    std::uint32_t m_rounds;
 };
 
 } // namespace ciallo
