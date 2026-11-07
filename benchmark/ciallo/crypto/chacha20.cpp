@@ -61,6 +61,27 @@ static void chacha20_benchmark(benchmark::State &state) {
                             static_cast<std::int64_t>(size));
 }
 
+/// @brief
+///   Measure @c ciallo::chacha20_random throughput for buffers of the size given by
+///   @c state.range(0).  The generator is seeded outside the measured region, so the numbers
+///   describe the cost of the stream itself.
+static void chacha20_random_benchmark(benchmark::State &state) {
+    const auto size = static_cast<std::size_t>(state.range(0));
+    std::vector<std::uint8_t> buffer(size);
+
+    ciallo::chacha20_random generator;
+    generator(buffer.data(), buffer.size());
+
+    for (auto _ : state) {
+        generator(buffer.data(), buffer.size());
+        benchmark::DoNotOptimize(buffer.data());
+        benchmark::ClobberMemory();
+    }
+
+    state.SetBytesProcessed(static_cast<std::int64_t>(state.iterations()) *
+                            static_cast<std::int64_t>(size));
+}
+
 // Small inputs: dominated by call overhead and tail handling.
 BENCHMARK(chacha20_benchmark)
     ->Arg(0)
@@ -77,3 +98,26 @@ BENCHMARK(chacha20_benchmark)->Arg(1024)->Arg(4096)->Arg(16384)->Name("chacha20/
 
 // Large inputs: sustained throughput.
 BENCHMARK(chacha20_benchmark)->Arg(1 << 16)->Arg(1 << 20)->Arg(1 << 24)->Name("chacha20/large");
+
+// The random stream generator uses the same sizes so that the two can be compared directly.
+BENCHMARK(chacha20_random_benchmark)
+    ->Arg(0)
+    ->Arg(8)
+    ->Arg(16)
+    ->Arg(32)
+    ->Arg(64)
+    ->Arg(128)
+    ->Arg(256)
+    ->Name("chacha20_random/small");
+
+BENCHMARK(chacha20_random_benchmark)
+    ->Arg(1024)
+    ->Arg(4096)
+    ->Arg(16384)
+    ->Name("chacha20_random/medium");
+
+BENCHMARK(chacha20_random_benchmark)
+    ->Arg(1 << 16)
+    ->Arg(1 << 20)
+    ->Arg(1 << 24)
+    ->Name("chacha20_random/large");
