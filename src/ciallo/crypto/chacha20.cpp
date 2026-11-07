@@ -4,10 +4,12 @@
 #    ifndef WIN32_LEAN_AND_MEAN
 #        define WIN32_LEAN_AND_MEAN
 #    endif
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
 #    include <Windows.h>
 #    include <bcrypt.h>
 #else
-#    include <cstdlib>
 #    include <sys/random.h>
 #    include <unistd.h>
 #endif
@@ -32,7 +34,9 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 
 /// @brief
 ///   Size in byte of one ChaCha20 keystream block.
@@ -1161,7 +1165,63 @@ std::size_t ciallo::chacha20(const void *data,
 ///   Size in byte of the buffer.
 static void random_bytes(void *buffer, std::size_t size) noexcept {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // TODO: implement for Windows.
+    // Try to use ProcessPrng
+    static const auto process_prng_func = []() noexcept -> BOOL(WINAPI *)(PBYTE, SIZE_T) {
+        HMODULE module =
+            LoadLibraryExW(L"BCryptPrimitives.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (module == nullptr) {
+            return nullptr;
+        }
+        FARPROC address = GetProcAddress(module, "ProcessPrng");
+        return reinterpret_cast<BOOL(WINAPI *)(PBYTE, SIZE_T)>(address);
+    }();
+
+    if (process_prng_func != nullptr) {
+        // This function always returns TRUE and never fails.
+        process_prng_func(static_cast<PBYTE>(buffer), size);
+        return;
+    }
+
+    // Try to use BCryptGenRandom.
+    static const auto bcrypt_gen_random_func =
+        []() noexcept -> NTSTATUS(WINAPI *)(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG) {
+        HMODULE module = LoadLibraryExW(L"Bcrypt.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (module == nullptr) {
+            return nullptr;
+        }
+        FARPROC address = GetProcAddress(module, "BCryptGenRandom");
+        return reinterpret_cast<NTSTATUS(WINAPI *)(BCRYPT_ALG_HANDLE, PUCHAR, ULONG, ULONG)>(
+            address);
+    }();
+
+    if (bcrypt_gen_random_func != nullptr) {
+        UCHAR *position = static_cast<UCHAR *>(buffer);
+        NTSTATUS result = bcrypt_gen_random_func(nullptr, position, static_cast<ULONG>(size),
+                                                 BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (result == 0) {
+            return;
+        }
+    }
+
+    // Try to use RtlGenRandom.
+    static const auto rtl_gen_random_func = []() noexcept -> BOOLEAN(WINAPI *)(PVOID, ULONG) {
+        HMODULE module = LoadLibraryExW(L"Advapi32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (module == nullptr) {
+            return nullptr;
+        }
+        FARPROC address = GetProcAddress(module, "SystemFunction036");
+        return reinterpret_cast<BOOLEAN(WINAPI *)(PVOID, ULONG)>(address);
+    }();
+
+    if (rtl_gen_random_func != nullptr) {
+        BOOLEAN result = rtl_gen_random_func(buffer, static_cast<ULONG>(size));
+        if (result == TRUE) {
+            return;
+        }
+    }
+
+    // No available random function for Win32.
+    ::__fastfail(FAST_FAIL_FATAL_APP_EXIT);
 #else
     int result = ::getentropy(buffer, size);
     if (result >= 0) [[likely]] {
@@ -1189,11 +1249,6 @@ ciallo::chacha20_random::chacha20_random(chacha20_random &&other) noexcept
     other.m_rounds   = 0;
 }
 
-ciallo::chacha20_random::~chacha20_random() {
-    std::ranges::fill(m_key, std::byte());
-    std::ranges::fill(m_nonce, std::byte());
-}
-
 ciallo::chacha20_random &ciallo::chacha20_random::operator=(chacha20_random &&other) noexcept {
     if (this == &other) [[unlikely]] {
         return *this;
@@ -1217,7 +1272,7 @@ ciallo::chacha20_random &ciallo::chacha20_random::operator=(chacha20_random &&ot
 ciallo::chacha20_random::result_type ciallo::chacha20_random::operator()() noexcept {
     std::uint32_t index = m_position++ % m_buffer.size();
     if (index == 0) {
-        if (m_rounds >= 32768) [[unlikely]] {
+        if (m_rounds >= 65536) [[unlikely]] {
             random_bytes(m_key.data(), sizeof(m_key));
             random_bytes(m_nonce.data(), sizeof(m_nonce));
             m_position = 0;
@@ -1246,11 +1301,11 @@ void ciallo::chacha20_random::operator()(void *buffer, std::size_t size) noexcep
         chacha20(position, random_size, m_key.data(), m_nonce.data(), m_rounds, position);
 
         new_rounds -= blocks;
-        m_rounds += blocks;
+        m_rounds += static_cast<std::uint32_t>(blocks);
         position += random_size;
         size -= random_size;
 
-        if (m_rounds >= 32768) {
+        if (m_rounds >= 65536) {
             random_bytes(m_key.data(), sizeof(m_key));
             random_bytes(m_nonce.data(), sizeof(m_nonce));
             m_position = 0;

@@ -135,6 +135,9 @@ public:
 
     /// @brief
     ///   Create this ChaCha20 random stream generator.
+    /// @note
+    ///   This constructor may cause fast-fail on Windows if there is no available system
+    ///   entropy-based random function.
     chacha20_random() noexcept;
 
     /// @brief
@@ -149,8 +152,8 @@ public:
     chacha20_random(chacha20_random &&other) noexcept;
 
     /// @brief
-    ///   Destroy this @c chacha20_random generator.
-    ~chacha20_random();
+    ///   @c chacha20_random is trivially destructible.
+    ~chacha20_random() = default;
 
     /// @brief
     ///   @c chacha20_random is not copyable.
@@ -185,6 +188,9 @@ public:
     ///   Generate a random value. This method is not concurrent safe.
     /// @return
     ///   New random value from this ChaCha20 random stream.
+    /// @note
+    ///   This function may cause fast-fail on Windows if there is no available system entropy-based
+    ///   random function.
     [[nodiscard]] result_type operator()() noexcept;
 
     /// @brief
@@ -193,6 +199,9 @@ public:
     ///   Pointer to start of the buffer to be filled.
     /// @param size
     ///   Size in byte of @p buffer to be filled.
+    /// @note
+    ///   This function may cause fast-fail on Windows if there is no available system entropy-based
+    ///   random function.
     void operator()(void *buffer, std::size_t size) noexcept;
 
 private:
